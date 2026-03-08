@@ -9,10 +9,15 @@ import comparison_module
 import balance_sheet_module
 import ai_advisor_module
 import cash_flow_module
+import auth
 
 # ── Page Config ──
 st.set_page_config(page_title="FinSuite Pro", layout="wide", initial_sidebar_state="expanded")
 st.markdown(utils.STYLES, unsafe_allow_html=True)
+
+# ── Authentication Gate ──
+if not auth.login_page():
+    st.stop()
 
 # ── Plotly Theme ──
 import plotly.io as pio
@@ -36,14 +41,23 @@ pio.templates["finsuite"] = go.layout.Template(
 pio.templates.default = "finsuite"
 
 # ── Sidebar ──
-st.sidebar.markdown("""
+_display = st.session_state.get('display_name', 'User')
+_role_badge = ' (Admin)' if st.session_state.get('user_role') == 'admin' else ''
+st.sidebar.markdown(f"""
 <div style="padding:4px 0 18px 0;border-bottom:1px solid #E2E8F0;margin-bottom:18px;">
   <div style="font-size:17px;font-weight:700;color:#0F172A;letter-spacing:-0.02em;">
     FinSuite Pro
   </div>
   <div style="font-size:11px;color:#94A3B8;margin-top:2px;">Financial Analysis Platform</div>
+  <div style="font-size:12px;color:#475569;margin-top:8px;">
+    Signed in as <b>{_display}</b>{_role_badge}
+  </div>
 </div>
 """, unsafe_allow_html=True)
+if st.sidebar.button("Sign Out", use_container_width=True):
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
+    st.rerun()
 
 # P&L parent name mapping
 PL_PARENT_MAP = {
@@ -238,9 +252,12 @@ df_final = st.session_state.df_working
 # ════════════════════════════════════════════
 #  TABS
 # ════════════════════════════════════════════
-tab_map, tab_pl, tab_bs, tab_cf, tab_comp, tab_sim = st.tabs([
-    "Mapping", "P&L", "Balance Sheet", "Cash Flow", "Comparison", "Strategy"
-])
+_tab_names = ["Mapping", "P&L", "Balance Sheet", "Cash Flow", "Comparison", "Strategy"]
+if st.session_state.get('user_role') == 'admin':
+    _tab_names.append("Admin")
+    tab_map, tab_pl, tab_bs, tab_cf, tab_comp, tab_sim, tab_admin = st.tabs(_tab_names)
+else:
+    tab_map, tab_pl, tab_bs, tab_cf, tab_comp, tab_sim = st.tabs(_tab_names)
 
 # ─────────────────────────────────────────
 # TAB 1: MAPPING
@@ -1043,3 +1060,10 @@ with tab_sim:
                 st.markdown(f"- {ins}")
         else:
             st.success("All key metrics are within normal range.")
+
+# ─────────────────────────────────────────
+# TAB 7: ADMIN (admin only)
+# ─────────────────────────────────────────
+if st.session_state.get('user_role') == 'admin':
+    with tab_admin:
+        auth.render_admin_panel()
