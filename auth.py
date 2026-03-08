@@ -18,8 +18,8 @@ def _hash_password(password: str, salt: str = None) -> tuple:
 def _load_users() -> dict:
     """Load users from JSON file."""
     if not os.path.exists(USERS_FILE):
-        # Create default admin user: admin / admin123
-        default_hash, default_salt = _hash_password('admin123')
+        # Create default admin user: admin / Giorgi90..
+        default_hash, default_salt = _hash_password('Giorgi90..')
         users = {
             'admin': {
                 'password_hash': default_hash,

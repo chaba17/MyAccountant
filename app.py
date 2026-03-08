@@ -54,7 +54,7 @@ st.sidebar.markdown(f"""
   </div>
 </div>
 """, unsafe_allow_html=True)
-if st.sidebar.button("Sign Out", use_container_width=True):
+if st.sidebar.button("Sign Out", use_container_width=True, key="btn_signout"):
     for key in list(st.session_state.keys()):
         del st.session_state[key]
     st.rerun()
