@@ -1,13 +1,6 @@
 """
-ai_advisor_module.py  — FinSuite Pro
-=====================================
-🔑 მთავარი გამოსწორებები:
-  1. Circular loop მოხსნილია:
-     - Hierarchy check: მხოლოდ ACTIVE კოდები (არა IGNORE)
-     - Orphan check: მშობელი კოდები სრულად გამოირიცხება
-  2. Orphan fix: თვითოეულ კოდს smart_suggest()-ით ინდივიდუალური
-     კატეგორია ენიჭება — ედიტირებადი ცხრილით
-  3. smart_suggest(): კოდის prefix + სახელის keywords მიხედვით
+ai_advisor_module.py — FinSuite Pro
+Data health checks and auto-fix suggestions.
 """
 
 import streamlit as st
@@ -35,23 +28,19 @@ ALL_VALID_CATS = BS_CATS + ALL_PL_CATS
 IGNORE_CAT = "IGNORE (იგნორირება)"
 
 
-# ─────────────────────────────────────────────────────────────
-# ჭკვიანი კატეგორიის გამოცნობა
-# ─────────────────────────────────────────────────────────────
 def smart_suggest(code: str, name: str = "") -> str:
+    """Auto-suggest category based on account code prefix and name keywords."""
     code = str(code).strip()
     name = str(name).lower()
 
-    # მშობელი კოდები → IGNORE
     if len(code) >= 3 and (code.endswith("00") or code.endswith("000")):
         return IGNORE_CAT
 
-    # სახელის საკვანძო სიტყვები
-    if any(k in name for k in ["ცვეთა","ამორტ","depreci","amort"]):
+    if any(k in name for k in ["ცვეთა", "ამორტ", "depreci", "amort"]):
         return "Depreciation (ცვეთა/ამორტიზაცია)"
-    if any(k in name for k in ["საპროცენტო","პროცენტ","interest"]):
+    if any(k in name for k in ["საპროცენტო", "პროცენტ", "interest"]):
         return "Interest (საპროცენტო ხარჯი)"
-    if any(k in name for k in ["გადასახად","income tax","profit tax"]):
+    if any(k in name for k in ["გადასახად", "income tax", "profit tax"]):
         return "Tax (მოგების გადასახადი)"
 
     pfx2 = code[:2]
@@ -69,7 +58,7 @@ def smart_suggest(code: str, name: str = "") -> str:
         return "BS: Equity (კაპიტალი)"
     if pfx1 == "6":
         return "Revenue (შემოსავალი)"
-    if pfx2 in ("71","72"):
+    if pfx2 in ("71", "72"):
         return "COGS (თვითღირებულება)"
     if pfx1 == "7":
         return "Operating Expenses (საოპერაციო ხარჯები)"
@@ -93,10 +82,8 @@ def _find_parents(all_codes: set) -> set:
     return parents
 
 
-# ─────────────────────────────────────────────────────────────
-# DATA HEALTH CHECK — loop-free
-# ─────────────────────────────────────────────────────────────
 def check_data_health(df: pd.DataFrame, context: str = "all") -> list:
+    """Check data for common issues: hierarchy duplicates, orphans, sign anomalies."""
     if df.empty:
         return []
 
@@ -109,7 +96,7 @@ def check_data_health(df: pd.DataFrame, context: str = "all") -> list:
     all_codes = set(df["Code"])
     all_parents = _find_parents(all_codes)
 
-    # 0. HIERARCHY CHECK — მხოლოდ active კოდები
+    # Hierarchy check - only active codes
     active_codes = set(df[df["Category"] != IGNORE_CAT]["Code"])
     bad_parents = []
     for p in active_codes:
@@ -121,18 +108,18 @@ def check_data_health(df: pd.DataFrame, context: str = "all") -> list:
     if bad_parents:
         bad_df = df[df["Code"].isin(bad_parents)]
         details = bad_df.apply(
-            lambda x: f"⚠️ {x['Code']} ({x['Name']})  →  {x['Category']}", axis=1
+            lambda x: f"{x['Code']} ({x['Name']}) -> {x['Category']}", axis=1
         ).tolist()
         issues.append({
             "type": "hierarchy_issue",
-            "title": "🔴 გაორმაგების რისკი (მშობელი კოდები)",
-            "desc": f"{len(bad_parents)} მშობელი კოდი active კატეგ.-ით — შვილებიც სიაშია.",
+            "title": "Hierarchy Risk (Parent Codes Active)",
+            "desc": f"{len(bad_parents)} parent codes have active categories — children are also in the list.",
             "details": details,
             "codes": bad_df["Code"].unique(),
             "context": context,
         })
 
-    # 1. ORPHAN CHECK — მშობლები გამოირიცხება
+    # Orphan check
     if context == "PL":
         scope = df[df["Code"].str.match(r"^[6789]", na=False)]
         orphans_df = scope[~scope["Category"].isin(ALL_PL_CATS) & (scope["Category"] != IGNORE_CAT)]
@@ -146,25 +133,25 @@ def check_data_health(df: pd.DataFrame, context: str = "all") -> list:
 
     if not real_orphans.empty:
         suggestions = {
-            str(r["Code"]): smart_suggest(r["Code"], r.get("Name",""))
+            str(r["Code"]): smart_suggest(r["Code"], r.get("Name", ""))
             for _, r in real_orphans.iterrows()
         }
         details = real_orphans.apply(
-            lambda x: f"🔴 {x['Code']} - {x['Name']}  →  [{suggestions.get(str(x['Code']), IGNORE_CAT)}]",
+            lambda x: f"{x['Code']} - {x['Name']} -> [{suggestions.get(str(x['Code']), IGNORE_CAT)}]",
             axis=1,
         ).tolist()
         issues.append({
             "type": "orphan",
-            "title": "🔴 გაუმართავი მეპინგი (Orphans)",
-            "desc": "კოდები გაუმართავი კატეგორიით. AI წინადადება ნახეთ ↓",
+            "title": "Invalid Mapping (Orphans)",
+            "desc": "Codes with invalid categories. AI suggestions shown below.",
             "details": details,
             "codes": real_orphans["Code"].unique(),
             "suggestions": suggestions,
             "context": context,
         })
 
-    # 2. SIGN ANOMALIES
-    if context in ("BS","all"):
+    # Sign anomalies
+    if context in ("BS", "all"):
         cash_neg = df[
             df["Code"].str.match(r"^1[12]", na=False)
             & df["Category"].str.contains("Current Assets", na=False)
@@ -173,21 +160,21 @@ def check_data_health(df: pd.DataFrame, context: str = "all") -> list:
         if not cash_neg.empty:
             issues.append({
                 "type": "cash_negative",
-                "title": "⚠️ უარყოფითი ფული/ბანკი",
-                "desc": "ოვერდრაფტი? ვალდებულება?",
-                "details": cash_neg.apply(lambda x: f"📉 {x['Code']}: {x['Net']:,.2f}", axis=1).tolist(),
+                "title": "Negative Cash/Bank",
+                "desc": "Overdraft? Should be a liability?",
+                "details": cash_neg.apply(lambda x: f"{x['Code']}: {x['Net']:,.2f}", axis=1).tolist(),
                 "codes": cash_neg["Code"].unique(),
                 "context": "BS",
             })
 
-    if context in ("PL","all"):
+    if context in ("PL", "all"):
         rev_pos = df[df["Category"].isin(REVENUE_CATS) & (df["Net"] > 1)]
         if not rev_pos.empty:
             issues.append({
                 "type": "revenue_positive",
-                "title": "⚠️ შემოსავალი დებეტშია",
-                "desc": "ხარჯი ხომ არაა?",
-                "details": rev_pos.apply(lambda x: f"📈 {x['Code']}: {x['Net']:,.2f}", axis=1).tolist(),
+                "title": "Revenue has Debit Balance",
+                "desc": "Could this be an expense?",
+                "details": rev_pos.apply(lambda x: f"{x['Code']}: {x['Net']:,.2f}", axis=1).tolist(),
                 "codes": rev_pos["Code"].unique(),
                 "context": "PL",
             })
@@ -195,9 +182,9 @@ def check_data_health(df: pd.DataFrame, context: str = "all") -> list:
         if not exp_neg.empty:
             issues.append({
                 "type": "expense_negative",
-                "title": "⚠️ ხარჯი კრედიტშია",
-                "desc": "შემოსავალი ხომ არაა?",
-                "details": exp_neg.apply(lambda x: f"📉 {x['Code']}: {x['Net']:,.2f}", axis=1).tolist(),
+                "title": "Expense has Credit Balance",
+                "desc": "Could this be revenue?",
+                "details": exp_neg.apply(lambda x: f"{x['Code']}: {x['Net']:,.2f}", axis=1).tolist(),
                 "codes": exp_neg["Code"].unique(),
                 "context": "PL",
             })
@@ -205,10 +192,8 @@ def check_data_health(df: pd.DataFrame, context: str = "all") -> list:
     return issues
 
 
-# ─────────────────────────────────────────────────────────────
-# FIX LOGIC
-# ─────────────────────────────────────────────────────────────
 def apply_fix_logic(issue_codes, target_category, source_key=None):
+    """Apply category fix to working data and optionally to saved DB."""
     issue_codes = [str(c).strip() for c in issue_codes]
     updated = False
 
@@ -235,116 +220,111 @@ def apply_fix_logic(issue_codes, target_category, source_key=None):
 
     if updated:
         st.cache_data.clear()
-        st.toast("✅ შესწორებულია!", icon="✅")
-        time.sleep(0.8)
+        st.toast("Applied successfully!", icon="✅")
+        time.sleep(0.3)
         st.rerun()
     else:
-        st.error("ვერ მოხერხდა შესწორება.")
+        st.error("Could not apply fix.")
 
 
-# ─────────────────────────────────────────────────────────────
-# DIALOG
-# ─────────────────────────────────────────────────────────────
-@st.dialog("🤖 AI ფინანსური ასისტენტი")
+@st.dialog("Data Health Assistant")
 def audit_dialog(issue: dict, source_key=None):
     st.markdown(f"### {issue['title']}")
-    st.caption(issue.get("desc",""))
+    st.caption(issue.get("desc", ""))
     st.markdown("---")
 
     if issue["type"] == "hierarchy_issue":
         st.warning(
-            "ეს კოდები **მშობლები** არიან — მათი შვილებიც active კატეგ.-ით არიან.\n\n"
-            "გამოსავალი: მშობელ კოდებს IGNORE მივანიჭოთ (შვილები ჯამდება)."
+            "These codes are **parents** — their children also have active categories.\n\n"
+            "Solution: Set parent codes to IGNORE (children will be summed instead)."
         )
         for det in issue["details"][:8]:
             st.code(det, language="text")
-        if st.button("✅ მშობლებს IGNORE", type="primary", key="fix_hier"):
+        if st.button("Set Parents to IGNORE", type="primary", key="fix_hier"):
             apply_fix_logic(issue["codes"], IGNORE_CAT, source_key)
 
     elif issue["type"] == "orphan":
-        suggestions: dict = issue.get("suggestions", {})
-        st.info("💡 AI-მ გამოიცნო კატეგორია. შეგიძლიათ შეცვალოთ სანამ გამოიყენებთ.")
+        suggestions = issue.get("suggestions", {})
+        st.info("AI suggested categories below. You can edit before applying.")
 
         rows = []
         df_w = st.session_state.df_working
         for code in issue["codes"]:
             name, net = "", 0.0
             if df_w is not None:
-                _tmp = df_w[df_w["Code"].astype(str).str.strip() == str(code)]
-                if not _tmp.empty:
-                    name = _tmp.iloc[0].get("Name","")
-                    net  = _tmp.iloc[0].get("Net", 0.0)
+                tmp = df_w[df_w["Code"].astype(str).str.strip() == str(code)]
+                if not tmp.empty:
+                    name = tmp.iloc[0].get("Name", "")
+                    net = tmp.iloc[0].get("Net", 0.0)
             rows.append({
                 "Code": str(code),
                 "Name": name,
                 "Net": net,
-                "კატეგორია": suggestions.get(str(code), IGNORE_CAT),
+                "Category": suggestions.get(str(code), IGNORE_CAT),
             })
 
         edited = st.data_editor(
             pd.DataFrame(rows),
             column_config={
-                "კატეგორია": st.column_config.SelectboxColumn(
-                    "კატეგორია", options=utils.MAPPING_OPTIONS, required=True, width="large"),
-                "Code": st.column_config.TextColumn("კოდი", width="small"),
-                "Name": st.column_config.TextColumn("სახელი", width="medium"),
-                "Net":  st.column_config.NumberColumn("Net", format="%.2f", width="small"),
+                "Category": st.column_config.SelectboxColumn(
+                    "Category", options=utils.MAPPING_OPTIONS, required=True, width="large"),
+                "Code": st.column_config.TextColumn("Code", width="small"),
+                "Name": st.column_config.TextColumn("Name", width="medium"),
+                "Net": st.column_config.NumberColumn("Net", format="%.2f", width="small"),
             },
             use_container_width=True,
             hide_index=True,
             key="orphan_fix_editor",
         )
 
-        final_map = dict(zip(edited["Code"].astype(str), edited["კატეგორია"]))
-        if st.button("✅ გამოყენება", type="primary", key="fix_orphan"):
+        final_map = dict(zip(edited["Code"].astype(str), edited["Category"]))
+        if st.button("Apply", type="primary", key="fix_orphan"):
             apply_fix_logic(issue["codes"], final_map, source_key)
 
     elif issue["type"] == "revenue_positive":
-        for det in issue["details"][:6]: st.code(det, language="text")
-        st.info("💡 გადავიტანოთ **'საოპერაციო ხარჯებში'**?")
+        for det in issue["details"][:6]:
+            st.code(det, language="text")
+        st.info("Move to **Operating Expenses**?")
         c1, c2 = st.columns(2)
-        if c1.button("✅ გადატანა", type="primary", key="fix_rev"):
+        if c1.button("Move", type="primary", key="fix_rev"):
             apply_fix_logic(issue["codes"], "Operating Expenses (საოპერაციო ხარჯები)", source_key)
-        if c2.button("❌ გაუქმება", key="cancel_rev"): st.rerun()
+        if c2.button("Cancel", key="cancel_rev"):
+            st.rerun()
 
     elif issue["type"] == "expense_negative":
-        for det in issue["details"][:6]: st.code(det, language="text")
-        st.info("💡 გადავიტანოთ **'სხვა შემოსავალში'**?")
-        if st.button("✅ გადატანა", type="primary", key="fix_exp"):
+        for det in issue["details"][:6]:
+            st.code(det, language="text")
+        st.info("Move to **Other Income/Expense**?")
+        if st.button("Move", type="primary", key="fix_exp"):
             apply_fix_logic(issue["codes"], "Other Income/Expense (სხვა არასაოპერაციო)", source_key)
 
     elif issue["type"] == "cash_negative":
-        for det in issue["details"][:6]: st.code(det, language="text")
-        st.info("💡 გადავიტანოთ **'მიმდინარე ვალდებულებებში'**?")
-        if st.button("✅ გადატანა", type="primary", key="fix_cash"):
+        for det in issue["details"][:6]:
+            st.code(det, language="text")
+        st.info("Move to **Current Liabilities**?")
+        if st.button("Move", type="primary", key="fix_cash"):
             apply_fix_logic(issue["codes"], "BS: Current Liabilities (მიმდინარე ვალდ.)", source_key)
 
     st.markdown("---")
-    if st.button("დახურვა", key="close_dialog"): st.rerun()
+    if st.button("Close", key="close_dialog"):
+        st.rerun()
 
 
-# ─────────────────────────────────────────────────────────────
-# RENDER UI
-# ─────────────────────────────────────────────────────────────
 def render_audit_ui(df: pd.DataFrame, context: str, source_key=None, ui_key: str = "default"):
+    """Render the audit UI with issue cards and fix buttons."""
     issues = check_data_health(df, context)
-    problematic_codes: set = set()
+    problematic_codes = set()
 
     if not issues:
-        st.success(f"✅ {context} მონაცემები სუფთაა.")
         return problematic_codes
 
-    with st.expander(f"🚨 AI აუდიტი — {len(issues)} შენიშვნა", expanded=True):
+    with st.expander(f"Data Audit — {len(issues)} issue(s)", expanded=True):
         for i, issue in enumerate(issues):
             if "codes" in issue:
                 problematic_codes.update(str(c) for c in issue["codes"])
             c1, c2 = st.columns([5, 1])
-            c1.warning(f"**{issue['title']}** — {issue.get('desc','')[:90]}")
-            if c2.button("🔍 გამოსწორება", key=f"ai_btn_{context}_{ui_key}_{issue['type']}_{i}"):
+            c1.warning(f"**{issue['title']}** — {issue.get('desc', '')[:90]}")
+            if c2.button("Fix", key=f"ai_btn_{context}_{ui_key}_{issue['type']}_{i}"):
                 audit_dialog(issue, source_key)
 
     return problematic_codes
-
-
-def render_strategy_btn(kpis):
-    pass

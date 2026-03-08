@@ -1,8 +1,9 @@
+import streamlit as st
 import pandas as pd
 import json
 import os
 
-# --- კონფიგურაცია ---
+# --- Configuration ---
 HISTORY_FILE = 'financial_history_db.json'
 SNAPSHOTS_FILE = 'pl_reports_archive.json'
 VARIANTS_FILE = 'mapping_variants.json'
@@ -16,43 +17,106 @@ MAPPING_OPTIONS = [
     "BS: Equity (კაპიტალი)",
     "BS: Non-Current Liabilities (გრძელვადიანი ვალდ.)",
     "BS: Current Liabilities (მიმდინარე ვალდ.)",
-    "IGNORE (იგნორირება)" 
+    "IGNORE (იგნორირება)"
 ]
 
-# --- სტილები ---
+# --- Modern Design System ---
 STYLES = """
 <style>
-    .pl-table {width: 100%; border-collapse: collapse; font-family: 'Segoe UI', Arial, sans-serif; font-size: 13px;}
-    .pl-table th {background-color: #EBF5FB; padding: 10px; text-align: right; border-bottom: 2px solid #AED6F1; color: #154360;}
-    .pl-table th.text-left {text-align: left;}
-    .pl-table td {padding: 7px 10px; border-bottom: 1px solid #f0f0f0;}
-    
-    .amt {text-align: right; font-family: 'Consolas', monospace; font-weight: 600;}
-    .neg {color: #C0392B;} 
-    .pos {color: #000;}
-    .var-pos {color: #27AE60; font-weight: bold;} 
-    .var-neg {color: #C0392B; font-weight: bold;}
-    
-    .header-row {background-color: #F4F6F7; font-weight: bold; color: #2C3E50; text-transform: uppercase; border-top: 1px solid #ccc;}
-    .total-row {background-color: #EAEDED; font-weight: bold; border-top: 1px solid #999; color: #2C3E50;}
-    .grand-row {background-color: #2C3E50; color: white !important; font-weight: bold; font-size: 15px;}
-    .grand-row .amt {color: white !important;}
-    
-    .code-col {color: #888; font-size: 11px; width: 60px; font-weight: bold;}
-    .sub-indent {padding-left: 15px;}
-    
-    .kpi-card {background-color: #ffffff; padding: 15px; border-radius: 8px; border: 1px solid #e0e0e0; box-shadow: 0 2px 4px rgba(0,0,0,0.05); text-align: center;}
-    .sim-card {padding: 20px; background-color: #f8f9fa; border-radius: 10px; border-left: 5px solid #F39C12; margin-bottom: 20px;}
+:root {
+    --primary: #2563EB;
+    --primary-light: #EFF6FF;
+    --success: #059669;
+    --success-light: #ECFDF5;
+    --danger: #DC2626;
+    --danger-light: #FEF2F2;
+    --warning: #D97706;
+    --warning-light: #FFFBEB;
+    --text-primary: #0F172A;
+    --text-secondary: #475569;
+    --text-muted: #94A3B8;
+    --border: #E2E8F0;
+    --bg-subtle: #F8FAFC;
+    --surface: #FFFFFF;
+}
+
+/* Global typography */
+.stApp { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; }
+
+/* Financial tables */
+.fin-table { width:100%; border-collapse:collapse; font-size:0.9rem; }
+.fin-table th { padding:10px 12px; text-align:left; font-size:0.75rem; font-weight:600;
+    text-transform:uppercase; letter-spacing:0.05em; color:var(--text-muted);
+    border-bottom:2px solid var(--border); background:var(--bg-subtle); }
+.fin-table th.text-right { text-align:right; }
+.fin-table td { padding:8px 12px; border-bottom:1px solid #F1F5F9; }
+.fin-table .amt { text-align:right; font-family:'JetBrains Mono','Fira Code',monospace;
+    font-size:0.875rem; font-weight:500; }
+.fin-table .neg { color:var(--danger); }
+.fin-table .pos { color:var(--text-primary); }
+.fin-table .var-pos { color:var(--success); font-weight:600; }
+.fin-table .var-neg { color:var(--danger); font-weight:600; }
+
+/* Row types */
+.fin-table .section-row td { background:var(--primary); color:white; font-weight:600;
+    padding:10px 12px; font-size:0.85rem; text-transform:uppercase; letter-spacing:0.03em; }
+.fin-table .subtotal-row td { background:var(--bg-subtle); font-weight:600;
+    border-top:1px solid var(--border); color:var(--text-primary); }
+.fin-table .calc-row td { background:var(--primary-light); font-weight:700;
+    border-top:2px solid var(--primary); color:var(--primary); }
+.fin-table .grand-row td { background:var(--text-primary); color:white; font-weight:700;
+    padding:12px; font-size:1rem; }
+.fin-table .grand-row .amt { color:white; }
+
+/* Code column */
+.fin-table .code-col { color:var(--text-muted); font-size:0.8rem; width:70px;
+    font-family:monospace; font-weight:500; }
+.fin-table .indent { padding-left:20px; }
+
+/* Expandable groups */
+.fin-table details>summary { list-style:none; cursor:pointer; }
+.fin-table details>summary::-webkit-details-marker { display:none; }
+.fin-table details summary::after { content:" ▸"; font-size:0.7em; color:var(--text-muted); }
+.fin-table details[open] summary::after { content:" ▾"; }
+
+/* Cards */
+.metric-card { background:var(--surface); padding:16px; border-radius:10px;
+    border:1px solid var(--border); }
+.metric-card .label { font-size:0.75rem; color:var(--text-muted); font-weight:500;
+    text-transform:uppercase; letter-spacing:0.05em; }
+.metric-card .value { font-size:1.5rem; font-weight:700; color:var(--text-primary);
+    font-family:'JetBrains Mono',monospace; margin-top:4px; }
+
+/* Badge */
+.badge { display:inline-block; padding:3px 10px; border-radius:99px; font-size:0.75rem; font-weight:600; }
+.badge-green { background:var(--success-light); color:var(--success); }
+.badge-red { background:var(--danger-light); color:var(--danger); }
+.badge-blue { background:var(--primary-light); color:var(--primary); }
+.badge-yellow { background:var(--warning-light); color:var(--warning); }
+
+/* Progress bars */
+.progress-track { background:#F1F5F9; border-radius:99px; height:6px; }
+.progress-fill { border-radius:99px; height:6px; transition:width 0.3s; }
+
+/* Clean expander styling */
+.fin-table .child-table { width:100%; margin:4px 0; background:#FAFBFC; }
+.fin-table .child-table td { padding:4px 12px; border-bottom:1px dashed #F1F5F9;
+    font-size:0.85rem; color:var(--text-secondary); }
+
+/* Hide Streamlit branding */
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+header {visibility: hidden;}
 </style>
 """
 
-# --- ბაზის ფუნქციები ---
+# --- Cached DB operations ---
+@st.cache_data(ttl=2)
 def load_db():
     if not os.path.exists(HISTORY_FILE): return {}
     try:
         with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
-            # იძულებითი სტრინგად კონვერტაცია ჩატვირთვისას
             for key in data:
                 for row in data[key]:
                     row['Code'] = str(row['Code']).strip()
@@ -60,13 +124,13 @@ def load_db():
     except: return {}
 
 def save_to_db(date_key, data):
-    # იძულებითი სტრინგად კონვერტაცია შენახვისას
     for row in data:
         row['Code'] = str(row['Code']).strip()
     db = load_db()
     db[date_key] = data
     with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
         json.dump(db, f, indent=4, ensure_ascii=False)
+    load_db.clear()
 
 def delete_from_db(date_key):
     db = load_db()
@@ -74,9 +138,11 @@ def delete_from_db(date_key):
         del db[date_key]
         with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
             json.dump(db, f, indent=4, ensure_ascii=False)
+        load_db.clear()
         return True
     return False
 
+@st.cache_data(ttl=2)
 def load_snapshots():
     if not os.path.exists(SNAPSHOTS_FILE): return {}
     try:
@@ -88,6 +154,7 @@ def save_snapshot(report_name, data):
     snaps[report_name] = data
     with open(SNAPSHOTS_FILE, 'w', encoding='utf-8') as f:
         json.dump(snaps, f, indent=4, ensure_ascii=False)
+    load_snapshots.clear()
 
 def delete_snapshot(report_name):
     snaps = load_snapshots()
@@ -95,9 +162,11 @@ def delete_snapshot(report_name):
         del snaps[report_name]
         with open(SNAPSHOTS_FILE, 'w', encoding='utf-8') as f:
             json.dump(snaps, f, indent=4, ensure_ascii=False)
+        load_snapshots.clear()
         return True
     return False
 
+@st.cache_data(ttl=2)
 def load_mapping_variants():
     if not os.path.exists(VARIANTS_FILE): return {}
     try:
@@ -110,6 +179,7 @@ def save_mapping_variant(name, mapping_dict):
     variants[name] = str_mapping
     with open(VARIANTS_FILE, 'w', encoding='utf-8') as f:
         json.dump(variants, f, indent=4, ensure_ascii=False)
+    load_mapping_variants.clear()
 
 def delete_mapping_variant(name):
     variants = load_mapping_variants()
@@ -117,10 +187,11 @@ def delete_mapping_variant(name):
         del variants[name]
         with open(VARIANTS_FILE, 'w', encoding='utf-8') as f:
             json.dump(variants, f, indent=4, ensure_ascii=False)
+        load_mapping_variants.clear()
         return True
     return False
 
-# --- ფორმატირება ---
+# --- Formatting ---
 def fmt_fin(val):
     if val is None: return ""
     s = "{:,.2f}".format(abs(val))
@@ -134,30 +205,66 @@ def fmt_var(val, is_expense=False):
     cls = "var-pos" if is_good else "var-neg"
     return f'<span class="{cls}">{arrow} {fmt_fin(val)}</span>'
 
-# ═══════════════════════════════════════════════════════════════
-# HIERARCHY LOGIC  —  parent detection + grouping
-# ═══════════════════════════════════════════════════════════════
+# --- Shared P&L Metrics Calculator ---
+def calc_pl_metrics(df_clean):
+    """Calculate all P&L metrics from a cleaned DataFrame. Returns dict."""
+    def c(cat): return df_clean[df_clean['Category']==cat]['Net'].sum()
+    rev = c("Revenue (შემოსავალი)") * -1
+    other_net = c("Other Income/Expense (სხვა არასაოპერაციო)") * -1
+    cogs = c("COGS (თვითღირებულება)")
+    opex = c("Operating Expenses (საოპერაციო ხარჯები)")
+    depr = c("Depreciation (ცვეთა/ამორტიზაცია)")
+    inte = c("Interest (საპროცენტო ხარჯი)")
+    tax = c("Tax (მოგების გადასახადი)")
+    gross = rev - cogs
+    ebitda = gross - opex
+    ebit = ebitda - depr
+    ebt = ebit - inte + other_net
+    net = ebt - tax
+    return dict(revenue=rev, cogs=cogs, opex=opex, depr=depr, interest=inte,
+                tax=tax, other=other_net, gross_profit=gross, ebitda=ebitda,
+                ebit=ebit, ebt=ebt, net_profit=net)
+
+# --- Shared BS Metrics Calculator ---
+def calc_bs_metrics(df_clean, net_profit=0):
+    """Calculate all Balance Sheet metrics from a cleaned DataFrame. Returns dict."""
+    def c(cat): return df_clean[df_clean['Category']==cat]['Net'].sum()
+    nc_assets = c("BS: Non-Current Assets (გრძელვადიანი აქტივები)")
+    c_assets = c("BS: Current Assets (მიმდინარე აქტივები)")
+    total_assets = nc_assets + c_assets
+    nc_liab = c("BS: Non-Current Liabilities (გრძელვადიანი ვალდ.)") * -1
+    c_liab = c("BS: Current Liabilities (მიმდინარე ვალდ.)") * -1
+    total_liab = nc_liab + c_liab
+    equity_base = c("BS: Equity (კაპიტალი)") * -1
+    total_equity = equity_base + net_profit
+    return dict(nc_assets=nc_assets, c_assets=c_assets, total_assets=total_assets,
+                nc_liab=nc_liab, c_liab=c_liab, total_liab=total_liab,
+                equity_base=equity_base, total_equity=total_equity)
+
+# ===================================================================
+# HIERARCHY LOGIC  --  parent detection + grouping
+# ===================================================================
 #
-# ქართულ ბუღ. სისტემაში კოდების ორი სახის hierarchy:
+# Georgian accounting system code hierarchy types:
 #
-#  TYPE A — SPACE PREFIX:
+#  TYPE A -- SPACE PREFIX:
 #    "1210" -> "1210 6"  (space separator = sub-analytic)
 #    "3131" -> "3131 0513"
-#    წესი: B.startswith(A + ' ')
+#    Rule: B.startswith(A + ' ')
 #
-#  TYPE B — NUMERIC PREFIX:
+#  TYPE B -- NUMERIC PREFIX:
 #    "11" -> "1110"  (B[:len(A)] == A)
 #    "1610" -> "1610 00002"
-#    წესი: ' ' not in A AND len(A) < len(B) AND B[:len(A)] == A
+#    Rule: ' ' not in A AND len(A) < len(B) AND B[:len(A)] == A
 #
-#  TYPE C — NET DUPLICATE (same net, different code):
-#    6000 Net == 6100 Net  →  6000 higher-level summary, must be removed
-#    6100 Net == 6112+6113+6114  →  6100 summary, must be removed
-#    წესი: detected via net equality + net-sum matching
+#  TYPE C -- NET DUPLICATE (same net, different code):
+#    6000 Net == 6100 Net  ->  6000 higher-level summary, must be removed
+#    6100 Net == 6112+6113+6114  ->  6100 summary, must be removed
+#    Rule: detected via net equality + net-sum matching
 #
 # CLEAN rule:  remove TYPE A+B+C parents from summation
 # GROUP rule:  each leaf displays under its nearest parent (any type)
-# ═══════════════════════════════════════════════════════════════
+# ===================================================================
 
 def _is_prefix_parent(a: str, b: str) -> bool:
     """True if a is a TYPE A or TYPE B parent of b."""
@@ -185,8 +292,8 @@ def _build_net_dupes(all_codes, nets, prefix_parents):
     """
     TYPE C: net-duplicate codes that are NOT prefix-parents.
     Two sub-rules:
-      C1 — same absolute net, numerically smaller code = higher summary
-      C2 — code net = sum of same first-digit family members
+      C1 -- same absolute net, numerically smaller code = higher summary
+      C2 -- code net = sum of same first-digit family members
     """
     from collections import defaultdict
     dupes = set()
@@ -244,8 +351,8 @@ def _build_net_dupes(all_codes, nets, prefix_parents):
 
 def clean_dataset_logic(data_list):
     """
-    შლის მშობელ კოდებს — რჩება მხოლოდ leaf (ფოთოლი) კოდები.
-    გამოიყენება P&L, BS, CF კალკულაციებისთვის — თანხა არ გაორმაგდება.
+    Removes parent codes -- only leaf codes remain.
+    Used for P&L, BS, CF calculations so amounts are not double-counted.
     """
     if not data_list:
         return pd.DataFrame()
@@ -269,12 +376,12 @@ def clean_dataset_logic(data_list):
 
 def get_parent_map(data_list):
     """
-    {leaf_code: (parent_code, parent_name)} — balance_sheet_module-ისთვის.
+    {leaf_code: (parent_code, parent_name)} -- for balance_sheet_module.
 
-    თითოეული leaf კოდისთვის პოულობს ყველაზე ახლო (longest) მშობელს:
-    1. prefix-parent (TYPE A/B) — პრიორიტეტი
-    2. net-dupe parent (TYPE C) — fallback (6112 -> 6100 'საოპერაციო შემოსავლები')
-    parent_name = DB-ში ჩაწერილი Name სვეტი
+    For each leaf code, finds the nearest (longest) parent:
+    1. prefix-parent (TYPE A/B) -- priority
+    2. net-dupe parent (TYPE C) -- fallback (6112 -> 6100)
+    parent_name = Name column recorded in DB
     """
     if not data_list:
         return {}
