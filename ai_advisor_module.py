@@ -5,6 +5,8 @@ Data health checks and auto-fix suggestions.
 
 import streamlit as st
 import pandas as pd
+import json
+import os
 import utils
 import time
 
@@ -192,39 +194,66 @@ def check_data_health(df: pd.DataFrame, context: str = "all") -> list:
     return issues
 
 
+def _save_directly_to_db(source_key, updated_records):
+    """Save directly to disk bypassing all caches."""
+    history_file = utils.HISTORY_FILE
+    db = {}
+    if os.path.exists(history_file):
+        try:
+            with open(history_file, 'r', encoding='utf-8') as f:
+                db = json.load(f)
+        except Exception:
+            db = {}
+    db[source_key] = updated_records
+    with open(history_file, 'w', encoding='utf-8') as f:
+        json.dump(db, f, indent=4, ensure_ascii=False)
+
+
 def apply_fix_logic(issue_codes, target_category, source_key=None):
-    """Apply category fix to working data and optionally to saved DB."""
+    """Apply category fix to working data and saved DB (bypasses cache)."""
     issue_codes = [str(c).strip() for c in issue_codes]
     updated = False
 
-    def _apply(df_ref):
-        df_ref = df_ref.copy()
-        df_ref["Code"] = df_ref["Code"].astype(str).str.strip()
-        for code in issue_codes:
-            mask = df_ref["Code"] == code
-            if not mask.any():
-                continue
-            cat = target_category.get(code, IGNORE_CAT) if isinstance(target_category, dict) else target_category
-            df_ref.loc[mask, "Category"] = cat
-        return df_ref
+    def _apply(records):
+        """Apply fix to a list of record dicts."""
+        for row in records:
+            code = str(row.get("Code", "")).strip()
+            if code in issue_codes:
+                if isinstance(target_category, dict):
+                    row["Category"] = target_category.get(code, IGNORE_CAT)
+                else:
+                    row["Category"] = target_category
+        return records
 
+    # Update working data if in editing mode
     if st.session_state.get("df_working") is not None:
-        st.session_state.df_working = _apply(st.session_state.df_working)
+        records = st.session_state.df_working.to_dict("records")
+        _apply(records)
+        st.session_state.df_working = pd.DataFrame(records)
         updated = True
 
+    # Update saved DB directly (bypass cache)
     if source_key:
-        load_db = utils.load_db
-        load_db.clear()
-        db = load_db()
+        history_file = utils.HISTORY_FILE
+        db = {}
+        if os.path.exists(history_file):
+            try:
+                with open(history_file, 'r', encoding='utf-8') as f:
+                    db = json.load(f)
+            except Exception:
+                db = {}
+
         if source_key in db:
-            df_temp = _apply(pd.DataFrame(db[source_key]))
-            utils.save_to_db(source_key, df_temp.to_dict("records"))
+            _apply(db[source_key])
+            with open(history_file, 'w', encoding='utf-8') as f:
+                json.dump(db, f, indent=4, ensure_ascii=False)
             updated = True
 
     if updated:
+        # Clear ALL caches so next load reads fresh from disk
+        utils.load_db.clear()
         st.cache_data.clear()
-        st.session_state["_fix_applied"] = True
-        st.toast("Applied successfully!", icon="✅")
+        st.toast("Fixed!", icon="✅")
     else:
         st.error("Could not apply fix.")
 
@@ -251,6 +280,7 @@ def audit_dialog(issue: dict, source_key=None):
         st.info("AI suggested categories below. You can edit before applying.")
 
         rows = []
+        # Load data for displaying names/values
         df_w = st.session_state.get("df_working")
         if df_w is None and source_key:
             db = utils.load_db()
@@ -324,18 +354,13 @@ def audit_dialog(issue: dict, source_key=None):
 
 def render_audit_ui(df: pd.DataFrame, context: str, source_key=None, ui_key: str = "default"):
     """Render the audit UI with issue cards and fix buttons."""
-    # If a fix was just applied, clear flag and rerun to refresh data
-    if st.session_state.pop("_fix_applied", False):
-        st.cache_data.clear()
-        st.rerun()
-
     issues = check_data_health(df, context)
     problematic_codes = set()
 
     if not issues:
         return problematic_codes
 
-    with st.expander(f"Data Audit — {len(issues)} issue(s)", expanded=True):
+    with st.expander(f"Data Audit — {len(issues)} issue(s)", expanded=False):
         for i, issue in enumerate(issues):
             if "codes" in issue:
                 problematic_codes.update(str(c) for c in issue["codes"])
