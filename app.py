@@ -19,6 +19,13 @@ st.markdown(utils.STYLES, unsafe_allow_html=True)
 if not auth.login_page():
     st.stop()
 
+# Force sidebar visible after login (override login page CSS)
+st.markdown("""
+<style>
+[data-testid="stSidebar"] { display: flex !important; }
+</style>
+""", unsafe_allow_html=True)
+
 # ── Plotly Theme ──
 import plotly.io as pio
 pio.templates["finsuite"] = go.layout.Template(
@@ -55,8 +62,7 @@ st.sidebar.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 if st.sidebar.button("Sign Out", use_container_width=True, key="btn_signout"):
-    for key in list(st.session_state.keys()):
-        del st.session_state[key]
+    auth.logout()
     st.rerun()
 
 # P&L parent name mapping

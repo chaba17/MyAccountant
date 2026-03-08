@@ -3,4 +3,21 @@ __pycache__/
 .vs/
 desktop.ini
 *.tmp
+
+# Runtime data files (created by the app, not part of source code)
 users.json
+sessions.json
+financial_history_db.json
+financial_history.json
+financial_db_full.json
+financial_db_v3.json
+mapping_memory.json
+mapping_memory_v2.json
+mapping_variants.json
+mapping_full.json
+mapping_geo_standard.json
+mapping_ifrs.json
+mapping_smart_ifrs.json
+mapping_structure.json
+pl_reports_archive.json
+pl_snapshots.json

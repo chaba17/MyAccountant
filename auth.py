@@ -5,6 +5,7 @@ import secrets
 import streamlit as st
 
 USERS_FILE = 'users.json'
+SESSIONS_FILE = 'sessions.json'
 
 
 def _hash_password(password: str, salt: str = None) -> tuple:
@@ -41,6 +42,48 @@ def _save_users(users: dict):
     """Save users to JSON file."""
     with open(USERS_FILE, 'w', encoding='utf-8') as f:
         json.dump(users, f, indent=4, ensure_ascii=False)
+
+
+def _load_sessions() -> dict:
+    """Load active sessions from file."""
+    if not os.path.exists(SESSIONS_FILE):
+        return {}
+    try:
+        with open(SESSIONS_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_sessions(sessions: dict):
+    """Save active sessions to file."""
+    with open(SESSIONS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(sessions, f, indent=4, ensure_ascii=False)
+
+
+def _create_session(username: str) -> str:
+    """Create a new session token for a user."""
+    token = secrets.token_urlsafe(32)
+    sessions = _load_sessions()
+    sessions[token] = username
+    _save_sessions(sessions)
+    return token
+
+
+def _validate_session(token: str) -> str:
+    """Validate session token. Returns username or None."""
+    if not token:
+        return None
+    sessions = _load_sessions()
+    return sessions.get(token)
+
+
+def _delete_session(token: str):
+    """Delete a session token."""
+    sessions = _load_sessions()
+    if token in sessions:
+        del sessions[token]
+        _save_sessions(sessions)
 
 
 def verify_login(username: str, password: str) -> bool:
@@ -122,14 +165,49 @@ def list_users() -> list:
     ]
 
 
+def _restore_session_from_token():
+    """Try to restore auth session from URL token (survives page refresh)."""
+    params = st.query_params
+    token = params.get("session")
+    if not token:
+        return False
+
+    username = _validate_session(token)
+    if not username:
+        # Token is invalid/expired, clean it from URL
+        st.query_params.clear()
+        return False
+
+    # Verify user still exists
+    users = _load_users()
+    if username not in users:
+        _delete_session(token)
+        st.query_params.clear()
+        return False
+
+    # Restore session state
+    st.session_state.authenticated = True
+    st.session_state.username = username
+    st.session_state.user_role = get_user_role(username)
+    st.session_state.display_name = get_display_name(username)
+    st.session_state.session_token = token
+    return True
+
+
 def login_page():
     """Render login page. Returns True if user is authenticated."""
+    # Already authenticated in this session
     if st.session_state.get('authenticated'):
         return True
 
+    # Try to restore from URL token (page refresh)
+    if _restore_session_from_token():
+        return True
+
+    # Show login form — hide sidebar during login
     st.markdown("""
     <style>
-    [data-testid="stSidebar"] { display: none; }
+    [data-testid="stSidebar"] { display: none !important; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -151,10 +229,15 @@ def login_page():
 
             if submitted:
                 if verify_login(username, password):
+                    # Create persistent session token
+                    token = _create_session(username)
+                    st.query_params["session"] = token
+
                     st.session_state.authenticated = True
                     st.session_state.username = username
                     st.session_state.user_role = get_user_role(username)
                     st.session_state.display_name = get_display_name(username)
+                    st.session_state.session_token = token
                     st.rerun()
                 else:
                     st.error("Invalid username or password")
@@ -166,6 +249,16 @@ def login_page():
         """, unsafe_allow_html=True)
 
     return False
+
+
+def logout():
+    """Sign out: clear session token and session state."""
+    token = st.session_state.get('session_token')
+    if token:
+        _delete_session(token)
+    st.query_params.clear()
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
 
 
 def render_admin_panel():
