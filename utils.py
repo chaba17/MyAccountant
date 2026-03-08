@@ -103,10 +103,8 @@ STYLES = """
 .fin-table .child-table td { padding:4px 12px; border-bottom:1px dashed #F1F5F9;
     font-size:0.85rem; color:var(--text-secondary); }
 
-/* Hide Streamlit branding */
-#MainMenu {visibility: hidden;}
+/* Hide Streamlit footer only */
 footer {visibility: hidden;}
-header {visibility: hidden;}
 </style>
 """
 
