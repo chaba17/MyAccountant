@@ -5,8 +5,8 @@ import os
 
 # --- Configuration ---
 HISTORY_FILE = 'financial_history_db.json'
-SNAPSHOTS_FILE = 'pl_reports_archive.json'
 VARIANTS_FILE = 'mapping_variants.json'
+MAPPING_MEMORY_FILE = 'mapping_memory.json'
 
 MAPPING_OPTIONS = [
     "Revenue (შემოსავალი)", "COGS (თვითღირებულება)", "Operating Expenses (საოპერაციო ხარჯები)",
@@ -141,30 +141,6 @@ def delete_from_db(date_key):
     return False
 
 @st.cache_data(ttl=2)
-def load_snapshots():
-    if not os.path.exists(SNAPSHOTS_FILE): return {}
-    try:
-        with open(SNAPSHOTS_FILE, 'r', encoding='utf-8') as f: return json.load(f)
-    except: return {}
-
-def save_snapshot(report_name, data):
-    snaps = load_snapshots()
-    snaps[report_name] = data
-    with open(SNAPSHOTS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(snaps, f, indent=4, ensure_ascii=False)
-    load_snapshots.clear()
-
-def delete_snapshot(report_name):
-    snaps = load_snapshots()
-    if report_name in snaps:
-        del snaps[report_name]
-        with open(SNAPSHOTS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(snaps, f, indent=4, ensure_ascii=False)
-        load_snapshots.clear()
-        return True
-    return False
-
-@st.cache_data(ttl=2)
 def load_mapping_variants():
     if not os.path.exists(VARIANTS_FILE): return {}
     try:
@@ -188,6 +164,25 @@ def delete_mapping_variant(name):
         load_mapping_variants.clear()
         return True
     return False
+
+# --- Mapping Memory (auto-remembers user mappings) ---
+def load_mapping_memory():
+    if not os.path.exists(MAPPING_MEMORY_FILE):
+        return {}
+    try:
+        with open(MAPPING_MEMORY_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def save_mapping_memory(code_category_map):
+    memory = load_mapping_memory()
+    for code, cat in code_category_map.items():
+        code = str(code).strip()
+        if cat != "IGNORE (იგნორირება)":
+            memory[code] = cat
+    with open(MAPPING_MEMORY_FILE, 'w', encoding='utf-8') as f:
+        json.dump(memory, f, indent=4, ensure_ascii=False)
 
 # --- Formatting ---
 def fmt_fin(val):

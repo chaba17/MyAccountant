@@ -8,7 +8,6 @@ import pandas as pd
 import json
 import os
 import utils
-import time
 
 BS_CATS = [
     "BS: Current Assets (მიმდინარე აქტივები)",

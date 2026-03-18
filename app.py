@@ -3,7 +3,10 @@ import pandas as pd
 import io
 import plotly.graph_objects as go
 import plotly.express as px
+import plotly.io as pio
 from datetime import datetime
+import json
+import os
 import utils
 import comparison_module
 import balance_sheet_module
@@ -19,7 +22,6 @@ st.markdown(utils.STYLES, unsafe_allow_html=True)
 if not auth.login_page():
     st.stop()
 
-# Force sidebar visible after login (override login page CSS)
 st.markdown("""
 <style>
 [data-testid="stSidebar"] { display: flex !important; }
@@ -27,7 +29,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ── Plotly Theme ──
-import plotly.io as pio
 pio.templates["finsuite"] = go.layout.Template(
     layout=dict(
         paper_bgcolor="rgba(0,0,0,0)",
@@ -42,14 +43,12 @@ pio.templates["finsuite"] = go.layout.Template(
                     borderwidth=1, font=dict(size=12, color="#475569")),
         hoverlabel=dict(bgcolor="#FFFFFF", bordercolor="rgba(0,0,0,0.1)",
                         font=dict(family="Inter", size=12, color="#0F172A")),
-        margin=dict(t=30, b=30, l=10, r=10),
     )
 )
-pio.templates.default = "finsuite"
 
 # ── Sidebar ──
-_display = st.session_state.get('display_name', 'User')
-_role_badge = ' (Admin)' if st.session_state.get('user_role') == 'admin' else ''
+display_name = st.session_state.get('display_name', 'User')
+role_badge = ' (Admin)' if st.session_state.get('user_role') == 'admin' else ''
 st.sidebar.markdown(f"""
 <div style="padding:4px 0 18px 0;border-bottom:1px solid #E2E8F0;margin-bottom:18px;">
   <div style="font-size:17px;font-weight:700;color:#0F172A;letter-spacing:-0.02em;">
@@ -57,7 +56,7 @@ st.sidebar.markdown(f"""
   </div>
   <div style="font-size:11px;color:#94A3B8;margin-top:2px;">Financial Analysis Platform</div>
   <div style="font-size:12px;color:#475569;margin-top:8px;">
-    Signed in as <b>{_display}</b>{_role_badge}
+    Signed in as <b>{display_name}</b>{role_badge}
   </div>
 </div>
 """, unsafe_allow_html=True)
@@ -77,14 +76,7 @@ PL_PARENT_MAP = {
     '9100': 'Income Tax',
 }
 
-st.sidebar.markdown("""
-<div style="font-size:11px;font-weight:600;color:#94A3B8;
-            text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px;">
-  Upload Data
-</div>
-""", unsafe_allow_html=True)
-
-# File upload state
+# File upload
 if 'upload_key' not in st.session_state:
     st.session_state.upload_key = 0
 
@@ -96,6 +88,21 @@ uploaded_file = st.sidebar.file_uploader(
 
 if 'df_working' not in st.session_state:
     st.session_state.df_working = None
+
+
+# ── Column Auto-Detection ──
+def find_column(df, keywords, is_code_col=False):
+    """Find a column by keywords. Only uses data-sampling fallback for code columns."""
+    for col in df.columns:
+        if any(kw in str(col).lower() for kw in keywords):
+            return col
+    if is_code_col:
+        for col in df.columns:
+            sample = df[col].dropna().astype(str).head(10)
+            if sample.str.match(r'^\d{3,6}').mean() > 0.5:
+                return col
+    return None
+
 
 # ── File Processing ──
 if uploaded_file and st.session_state.df_working is None:
@@ -117,36 +124,34 @@ if uploaded_file and st.session_state.df_working is None:
             df = df.iloc[1:].reset_index(drop=True)
 
         # Auto-detect columns
-        def _find_col(df, keywords):
-            for col in df.columns:
-                if any(kw in str(col).lower() for kw in keywords):
-                    return col
-            for col in df.columns:
-                sample = df[col].dropna().astype(str).head(10)
-                if sample.str.match(r'^\d{3,6}').mean() > 0.5:
-                    return col
-            return None
-
-        code_col = _find_col(df, ['code', 'კოდ', 'account', 'ანალიტიკ', 'acct', '#'])
-        name_col = _find_col(df, ['name', 'სახელ', 'დასახელ', 'description', 'title', 'наим'])
-        debit_col = _find_col(df, ['debit', 'დებეტ', 'debet', 'db'])
-        credit_col = _find_col(df, ['credit', 'კრედიტ', 'cr'])
-        balance_col = _find_col(df, ['balance', 'ნაშთ', 'net', 'სალდო', 'amount', 'თანხ'])
+        code_col = find_column(df, ['code', 'კოდ', 'account', 'ანალიტიკ', 'acct', '#'], is_code_col=True)
+        name_col = find_column(df, ['name', 'სახელ', 'დასახელ', 'description', 'title', 'наим'])
+        debit_col = find_column(df, ['debit', 'დებეტ', 'debet', 'db'])
+        credit_col = find_column(df, ['credit', 'კრედიტ', 'cr'])
+        balance_col = find_column(df, ['balance', 'ნაშთ', 'net', 'სალდო', 'amount', 'თანხ'])
 
         # Fallback to positional
         cols = list(df.columns)
-        if code_col is None and len(cols) >= 1: code_col = cols[0]
-        if name_col is None and len(cols) >= 2: name_col = cols[1]
-        if debit_col is None and len(cols) >= 3: debit_col = cols[2]
-        if credit_col is None and len(cols) >= 4: credit_col = cols[3]
+        if not code_col and len(cols) >= 1:
+            code_col = cols[0]
+        if not name_col and len(cols) >= 2:
+            name_col = cols[1]
+        if not debit_col and not balance_col and len(cols) >= 3:
+            debit_col = cols[2]
+        if not credit_col and not balance_col and len(cols) >= 4:
+            credit_col = cols[3]
 
-        # Rename
         rename_map = {}
-        if code_col: rename_map[code_col] = 'Code'
-        if name_col and name_col != code_col: rename_map[name_col] = 'Name'
-        if debit_col and debit_col not in rename_map: rename_map[debit_col] = 'Debit'
-        if credit_col and credit_col not in rename_map: rename_map[credit_col] = 'Credit'
-        if balance_col and balance_col not in rename_map: rename_map[balance_col] = 'Balance'
+        if code_col:
+            rename_map[code_col] = 'Code'
+        if name_col:
+            rename_map[name_col] = 'Name'
+        if debit_col:
+            rename_map[debit_col] = 'Debit'
+        if credit_col:
+            rename_map[credit_col] = 'Credit'
+        if balance_col:
+            rename_map[balance_col] = 'Balance'
         df.rename(columns=rename_map, inplace=True)
 
         # Ensure required columns
@@ -161,8 +166,10 @@ if uploaded_file and st.session_state.df_working is None:
             else:
                 df['Debit'] = 0
                 df['Credit'] = 0
-        if 'Debit' not in df.columns: df['Debit'] = 0
-        if 'Credit' not in df.columns: df['Credit'] = 0
+        if 'Debit' not in df.columns:
+            df['Debit'] = 0
+        if 'Credit' not in df.columns:
+            df['Credit'] = 0
 
         # Clean
         df = df[df['Code'].notna()].copy()
@@ -184,70 +191,23 @@ if uploaded_file and st.session_state.df_working is None:
         st.stop()
 
     # ── Hierarchy detection & Category assignment ──
-    import json as _json
-    import os as _os
-    from collections import defaultdict as _ddict
+    # Use utils.py hierarchy logic (single source of truth)
+    all_codes = list(df['Code'].unique())
+    nets = df.groupby('Code')['Net'].sum().to_dict()
+    prefix_parents = utils._build_prefix_parents(all_codes)
+    net_dupes = utils._build_net_dupes(all_codes, nets, prefix_parents)
+    parent_codes = prefix_parents | net_dupes
 
-    _nets = df.groupby("Code")["Net"].sum().to_dict()
-    _all = list(df["Code"].unique())
-    _pure = [c for c in _all if ' ' not in c]
-    _parents = set()
-
-    # Rule 1: space separator
-    for _c in _all:
-        if ' ' in _c:
-            _p = _c.split(' ')[0]
-            if _p in set(_all):
-                _parents.add(_p)
-
-    # Rule 2: same net, pure numeric -> smaller = parent
-    for _a in _pure:
-        _na = _nets.get(_a, 0)
-        if abs(_na) < 0.01:
-            continue
-        for _b in _pure:
-            if _a == _b:
-                continue
-            if abs(_nets.get(_b, 0) - _na) < 0.05:
-                try:
-                    if int(_a) < int(_b):
-                        _parents.add(_a)
-                except ValueError:
-                    pass
-
-    # Rule 3: net = sum of family
-    _remaining = [c for c in _pure if c not in _parents]
-    _fams = _ddict(list)
-    for _c in _remaining:
-        _fams[_c[0]].append(_c)
-    for _fam, _members in _fams.items():
-        if len(_members) < 2:
-            continue
-        for _x in _members:
-            _nx = _nets.get(_x, 0)
-            if abs(_nx) < 0.01:
-                continue
-            _others = [c for c in _members if c != _x]
-            if abs(sum(_nets.get(c, 0) for c in _others) - _nx) < 0.05:
-                _parents.add(_x)
-
-    # Load mapping memory
-    _mem_file = "mapping_memory.json"
-    _memory_map = {}
-    if _os.path.exists(_mem_file):
-        try:
-            with open(_mem_file, "r", encoding="utf-8") as _f:
-                _memory_map = _json.load(_f)
-        except Exception:
-            _memory_map = {}
+    # Load mapping memory for auto-suggestions
+    memory_map = utils.load_mapping_memory()
 
     def smart_map(row):
         code = str(row["Code"]).strip()
         name = str(row.get("Name", ""))
-        if code in _parents:
+        if code in parent_codes:
             return "IGNORE (იგნორირება)"
-        if code in _memory_map:
-            return _memory_map[code]
+        if code in memory_map:
+            return memory_map[code]
         return ai_advisor_module.smart_suggest(code, name)
 
     df["Category"] = df.apply(smart_map, axis=1)
@@ -258,12 +218,12 @@ df_final = st.session_state.df_working
 # ════════════════════════════════════════════
 #  TABS
 # ════════════════════════════════════════════
-_tab_names = ["Mapping", "P&L", "Balance Sheet", "Cash Flow", "Comparison", "Strategy"]
+tab_names = ["Mapping", "P&L", "Balance Sheet", "Cash Flow", "Comparison", "Dashboard"]
 if st.session_state.get('user_role') == 'admin':
-    _tab_names.append("Admin")
-    tab_map, tab_pl, tab_bs, tab_cf, tab_comp, tab_sim, tab_admin = st.tabs(_tab_names)
+    tab_names.append("Admin")
+    tab_map, tab_pl, tab_bs, tab_cf, tab_comp, tab_dash, tab_admin = st.tabs(tab_names)
 else:
-    tab_map, tab_pl, tab_bs, tab_cf, tab_comp, tab_sim = st.tabs(_tab_names)
+    tab_map, tab_pl, tab_bs, tab_cf, tab_comp, tab_dash = st.tabs(tab_names)
 
 # ─────────────────────────────────────────
 # TAB 1: MAPPING
@@ -274,27 +234,26 @@ with tab_map:
         db_keys = sorted(db.keys(), reverse=True)
 
         if not db_keys:
-            # Empty state
             st.markdown("""
-<div style="text-align:center;padding:80px 20px;">
-  <div style="font-size:48px;margin-bottom:16px;opacity:0.6;">&#128202;</div>
-  <h2 style="color:#0F172A;margin-bottom:8px;font-size:22px;">Welcome to FinSuite Pro</h2>
-  <p style="color:#64748B;font-size:14px;max-width:400px;margin:0 auto;">
-    Upload an Excel trial balance from the sidebar to start your financial analysis.
+<div style="text-align:center;padding:60px 20px;">
+  <div style="font-size:42px;margin-bottom:12px;opacity:0.5;">📊</div>
+  <h2 style="color:#0F172A;margin-bottom:8px;font-size:20px;">Get Started</h2>
+  <p style="color:#64748B;font-size:14px;max-width:380px;margin:0 auto 24px;">
+    Upload an Excel trial balance from the sidebar to begin.
   </p>
-  <div style="display:flex;justify-content:center;gap:40px;margin-top:28px;">
+  <div style="display:flex;justify-content:center;gap:32px;">
     <div style="text-align:center;color:#64748B;font-size:13px;">
-      <div style="background:#2563EB;color:white;width:30px;height:30px;border-radius:50%;
-                  display:flex;align-items:center;justify-content:center;font-weight:700;
-                  margin:0 auto 8px;">1</div>Upload Excel</div>
+      <div style="background:#2563EB;color:white;width:28px;height:28px;border-radius:50%;
+                  display:inline-flex;align-items:center;justify-content:center;font-weight:700;
+                  font-size:13px;margin-bottom:6px;">1</div><br>Upload</div>
     <div style="text-align:center;color:#64748B;font-size:13px;">
-      <div style="background:#2563EB;color:white;width:30px;height:30px;border-radius:50%;
-                  display:flex;align-items:center;justify-content:center;font-weight:700;
-                  margin:0 auto 8px;">2</div>Review Mapping</div>
+      <div style="background:#2563EB;color:white;width:28px;height:28px;border-radius:50%;
+                  display:inline-flex;align-items:center;justify-content:center;font-weight:700;
+                  font-size:13px;margin-bottom:6px;">2</div><br>Map</div>
     <div style="text-align:center;color:#64748B;font-size:13px;">
-      <div style="background:#2563EB;color:white;width:30px;height:30px;border-radius:50%;
-                  display:flex;align-items:center;justify-content:center;font-weight:700;
-                  margin:0 auto 8px;">3</div>Save & Analyze</div>
+      <div style="background:#2563EB;color:white;width:28px;height:28px;border-radius:50%;
+                  display:inline-flex;align-items:center;justify-content:center;font-weight:700;
+                  font-size:13px;margin-bottom:6px;">3</div><br>Analyze</div>
   </div>
 </div>""", unsafe_allow_html=True)
 
@@ -302,142 +261,141 @@ with tab_map:
             # Saved periods manager
             st.markdown("#### Saved Periods")
 
-            _std_cats = [c for c in utils.MAPPING_OPTIONS if c != "IGNORE (იგნორირება)"]
+            std_cats = [c for c in utils.MAPPING_OPTIONS if c != "IGNORE (იგნორირება)"]
             grid_cols = st.columns(min(4, len(db_keys)))
-            for _i, _k in enumerate(db_keys):
-                _df_k = pd.DataFrame(db[_k])
-                _n_total = len(_df_k)
-                _n_mapped = len(_df_k[_df_k["Category"].isin(_std_cats)]) if "Category" in _df_k.columns else 0
-                _pct = _n_mapped / _n_total * 100 if _n_total else 0
-                _net = _df_k["Net"].sum() if "Net" in _df_k.columns else 0
-                _color = "#059669" if _pct == 100 else ("#D97706" if _pct > 70 else "#DC2626")
-                with grid_cols[_i % min(4, len(db_keys))]:
+            for i, k in enumerate(db_keys):
+                df_k = pd.DataFrame(db[k])
+                n_total = len(df_k)
+                n_mapped = len(df_k[df_k["Category"].isin(std_cats)]) if "Category" in df_k.columns else 0
+                pct = n_mapped / n_total * 100 if n_total else 0
+                color = "#059669" if pct == 100 else ("#D97706" if pct > 70 else "#DC2626")
+                with grid_cols[i % min(4, len(db_keys))]:
                     st.markdown(f"""
 <div style="border:1px solid #E2E8F0;border-radius:10px;padding:14px;margin-bottom:10px;background:white;">
-  <div style="font-weight:700;font-size:14px;color:#0F172A;">{_k}</div>
-  <div style="font-size:12px;color:#64748B;margin:4px 0;">{_n_total} codes</div>
+  <div style="font-weight:700;font-size:14px;color:#0F172A;">{k}</div>
+  <div style="font-size:12px;color:#64748B;margin:4px 0;">{n_total} codes</div>
   <div style="background:#F1F5F9;border-radius:99px;height:5px;margin:8px 0;">
-    <div style="background:{_color};width:{_pct:.0f}%;height:5px;border-radius:99px;"></div>
+    <div style="background:{color};width:{pct:.0f}%;height:5px;border-radius:99px;"></div>
   </div>
-  <div style="font-size:11px;color:{_color};font-weight:600;">{_pct:.0f}% mapped</div>
+  <div style="font-size:11px;color:{color};font-weight:600;">{pct:.0f}% mapped</div>
 </div>""", unsafe_allow_html=True)
 
             st.markdown("---")
 
-            _c_sel, _c_edit, _c_del = st.columns([3, 1, 1])
-            _selected_period = _c_sel.selectbox("Select period:", db_keys, key="mgr_period",
-                                                 label_visibility="collapsed")
+            col_sel, col_edit, col_del = st.columns([3, 1, 1])
+            selected_period = col_sel.selectbox("Select period:", db_keys, key="mgr_period",
+                                                label_visibility="collapsed")
 
-            if _c_edit.button("Edit", type="primary", use_container_width=True, key="btn_edit"):
-                _period_data = db[_selected_period]
-                _df_loaded = pd.DataFrame(_period_data)
-                if "Code" in _df_loaded.columns:
-                    _df_loaded["Code"] = _df_loaded["Code"].astype(str).str.strip()
-                if "Net" not in _df_loaded.columns:
-                    _df_loaded["Net"] = _df_loaded.get("Debit", 0) - _df_loaded.get("Credit", 0)
-                if "Category" not in _df_loaded.columns:
-                    _df_loaded["Category"] = "IGNORE (იგნორირება)"
-                st.session_state.df_working = _df_loaded
-                st.session_state.editing_period_key = _selected_period
+            if col_edit.button("Edit", type="primary", use_container_width=True, key="btn_edit"):
+                period_data = db[selected_period]
+                df_loaded = pd.DataFrame(period_data)
+                if "Code" in df_loaded.columns:
+                    df_loaded["Code"] = df_loaded["Code"].astype(str).str.strip()
+                if "Net" not in df_loaded.columns:
+                    df_loaded["Net"] = df_loaded.get("Debit", 0) - df_loaded.get("Credit", 0)
+                if "Category" not in df_loaded.columns:
+                    df_loaded["Category"] = "IGNORE (იგნორირება)"
+                st.session_state.df_working = df_loaded
+                st.session_state.editing_period_key = selected_period
                 st.rerun()
 
             # Delete with confirmation
             if "delete_confirm_period" not in st.session_state:
                 st.session_state.delete_confirm_period = None
 
-            if _c_del.button("Delete", use_container_width=True, key="btn_del"):
-                st.session_state.delete_confirm_period = _selected_period
+            if col_del.button("Delete", use_container_width=True, key="btn_del"):
+                st.session_state.delete_confirm_period = selected_period
 
-            if st.session_state.delete_confirm_period == _selected_period:
-                st.error(f"Delete **{_selected_period}** permanently?")
-                _dc1, _dc2, _dc3 = st.columns([1, 1, 3])
-                if _dc1.button("Yes, delete", type="primary", key="btn_confirm_del"):
-                    utils.delete_from_db(_selected_period)
+            if st.session_state.delete_confirm_period == selected_period:
+                st.error(f"Delete **{selected_period}** permanently?")
+                dc1, dc2, dc3 = st.columns([1, 1, 3])
+                if dc1.button("Yes, delete", type="primary", key="btn_confirm_del"):
+                    utils.delete_from_db(selected_period)
                     st.session_state.delete_confirm_period = None
-                    st.toast(f"{_selected_period} deleted")
+                    st.toast(f"{selected_period} deleted")
                     st.rerun()
-                if _dc2.button("Cancel", key="btn_cancel_del"):
+                if dc2.button("Cancel", key="btn_cancel_del"):
                     st.session_state.delete_confirm_period = None
                     st.rerun()
 
             # Detail panel
-            st.markdown(f"#### {_selected_period} — Details")
-            _df_sel = pd.DataFrame(db[_selected_period])
-            if "Code" in _df_sel.columns:
-                _df_sel["Code"] = _df_sel["Code"].astype(str).str.strip()
-            _n_total2 = len(_df_sel)
-            _n_mapped2 = len(_df_sel[_df_sel["Category"].isin(_std_cats)]) if "Category" in _df_sel.columns else 0
-            _n_ignore2 = len(_df_sel[_df_sel["Category"] == "IGNORE (იგნორირება)"]) if "Category" in _df_sel.columns else 0
-            _net2 = _df_sel["Net"].sum() if "Net" in _df_sel.columns else 0
+            st.markdown(f"#### {selected_period} — Details")
+            df_sel = pd.DataFrame(db[selected_period])
+            if "Code" in df_sel.columns:
+                df_sel["Code"] = df_sel["Code"].astype(str).str.strip()
+            n_total = len(df_sel)
+            n_mapped = len(df_sel[df_sel["Category"].isin(std_cats)]) if "Category" in df_sel.columns else 0
+            n_ignore = len(df_sel[df_sel["Category"] == "IGNORE (იგნორირება)"]) if "Category" in df_sel.columns else 0
+            net_total = df_sel["Net"].sum() if "Net" in df_sel.columns else 0
 
-            _s1, _s2, _s3, _s4 = st.columns(4)
-            _s1.metric("Total Codes", _n_total2)
-            _s2.metric("Mapped", _n_mapped2)
-            _s3.metric("Unmapped", _n_total2 - _n_mapped2 - _n_ignore2)
-            _s4.metric("Total Net", utils.fmt_fin(_net2))
+            s1, s2, s3, s4 = st.columns(4)
+            s1.metric("Total Codes", n_total)
+            s2.metric("Mapped", n_mapped)
+            s3.metric("Unmapped", n_total - n_mapped - n_ignore)
+            s4.metric("Total Net", utils.fmt_fin(net_total))
 
-            if "Category" in _df_sel.columns:
+            if "Category" in df_sel.columns:
                 with st.expander("Category Distribution", expanded=False):
-                    _cc = _df_sel["Category"].value_counts().reset_index()
-                    _cc.columns = ["Category", "Count"]
-                    if "Net" in _df_sel.columns:
-                        _nc = _df_sel.groupby("Category")["Net"].sum().reset_index()
-                        _nc.columns = ["Category", "Total Net"]
-                        _cc = _cc.merge(_nc, on="Category", how="left")
-                        _cc["Total Net"] = _cc["Total Net"].apply(utils.fmt_fin)
-                    st.dataframe(_cc, use_container_width=True, hide_index=True)
+                    cc = df_sel["Category"].value_counts().reset_index()
+                    cc.columns = ["Category", "Count"]
+                    if "Net" in df_sel.columns:
+                        nc = df_sel.groupby("Category")["Net"].sum().reset_index()
+                        nc.columns = ["Category", "Total Net"]
+                        cc = cc.merge(nc, on="Category", how="left")
+                        cc["Total Net"] = cc["Total Net"].apply(utils.fmt_fin)
+                    st.dataframe(cc, use_container_width=True, hide_index=True)
 
     # ── Mapping Editor ──
     else:
         if "editing_period_key" not in st.session_state:
             st.session_state.editing_period_key = None
 
-        _is_edit = bool(st.session_state.editing_period_key)
-        _edit_label = f" — Editing: {st.session_state.editing_period_key}" if _is_edit else ""
+        is_edit = bool(st.session_state.editing_period_key)
+        edit_label = f" — Editing: {st.session_state.editing_period_key}" if is_edit else ""
 
-        st.markdown(f"#### Category Mapping{_edit_label}")
+        st.markdown(f"#### Category Mapping{edit_label}")
 
         df_w = st.session_state.df_working
-        _std_cats2 = [c for c in utils.MAPPING_OPTIONS if c != "IGNORE (იგნორირება)"]
-        _total = len(df_w)
-        _mapped = len(df_w[df_w["Category"].isin(_std_cats2)]) if "Category" in df_w.columns else 0
-        _ignore = len(df_w[df_w["Category"] == "IGNORE (იგნორირება)"]) if "Category" in df_w.columns else 0
-        _unmap = _total - _mapped - _ignore
-        _pct2 = _mapped / _total * 100 if _total else 0
+        std_cats = [c for c in utils.MAPPING_OPTIONS if c != "IGNORE (იგნორირება)"]
+        total = len(df_w)
+        mapped = len(df_w[df_w["Category"].isin(std_cats)]) if "Category" in df_w.columns else 0
+        ignore = len(df_w[df_w["Category"] == "IGNORE (იგნორირება)"]) if "Category" in df_w.columns else 0
+        unmap = total - mapped - ignore
+        pct = mapped / total * 100 if total else 0
 
-        _mc1, _mc2, _mc3, _mc4 = st.columns(4)
-        _mc1.metric("Total", _total)
-        _mc2.metric("Mapped", f"{_mapped} ({_pct2:.0f}%)")
-        _mc3.metric("Unmapped", _unmap)
-        _mc4.metric("Ignored", _ignore)
-        st.progress(_pct2 / 100)
+        mc1, mc2, mc3, mc4 = st.columns(4)
+        mc1.metric("Total", total)
+        mc2.metric("Mapped", f"{mapped} ({pct:.0f}%)")
+        mc3.metric("Unmapped", unmap)
+        mc4.metric("Ignored", ignore)
+        st.progress(pct / 100)
         st.markdown("---")
 
-        _col_main, _col_side = st.columns([3, 1])
+        col_main, col_side = st.columns([3, 1])
 
-        with _col_main:
-            _fc1, _fc2, _fc3 = st.columns([2, 2, 1])
-            _search_q = _fc1.text_input("Search", placeholder="Code or name...", key="map_search")
-            _filter_cat = _fc2.selectbox("Filter by category",
-                                          ["All"] + utils.MAPPING_OPTIONS, key="map_filter")
-            _show_unmap = _fc3.checkbox("Unmapped only", key="map_unmap")
+        with col_main:
+            fc1, fc2, fc3 = st.columns([2, 2, 1])
+            search_q = fc1.text_input("Search", placeholder="Code or name...", key="map_search")
+            filter_cat = fc2.selectbox("Filter by category",
+                                       ["All"] + utils.MAPPING_OPTIONS, key="map_filter")
+            show_unmap = fc3.checkbox("Unmapped only", key="map_unmap")
 
-            _fdf = df_w.copy()
-            if _search_q:
-                _fdf = _fdf[
-                    _fdf["Code"].astype(str).str.contains(_search_q, case=False, na=False) |
-                    _fdf["Name"].astype(str).str.contains(_search_q, case=False, na=False)
+            fdf = df_w.copy()
+            if search_q:
+                fdf = fdf[
+                    fdf["Code"].astype(str).str.contains(search_q, case=False, na=False) |
+                    fdf["Name"].astype(str).str.contains(search_q, case=False, na=False)
                 ]
-            if _filter_cat != "All":
-                _fdf = _fdf[_fdf["Category"] == _filter_cat]
-            if _show_unmap:
-                _fdf = _fdf[~_fdf["Category"].isin(_std_cats2 + ["IGNORE (იგნორირება)"])]
+            if filter_cat != "All":
+                fdf = fdf[fdf["Category"] == filter_cat]
+            if show_unmap:
+                fdf = fdf[~fdf["Category"].isin(std_cats + ["IGNORE (იგნორირება)"])]
 
-            st.caption(f"Showing **{len(_fdf)}** / {_total}")
+            st.caption(f"Showing **{len(fdf)}** / {total}")
 
-            _display_df = _fdf[["Code", "Name", "Net", "Category"]].copy()
-            _edited_df = st.data_editor(
-                _display_df,
+            display_df = fdf[["Code", "Name", "Net", "Category"]].copy()
+            edited_df = st.data_editor(
+                display_df,
                 column_config={
                     "Category": st.column_config.SelectboxColumn(
                         "Category", options=utils.MAPPING_OPTIONS, width="large", required=True),
@@ -448,122 +406,129 @@ with tab_map:
                 use_container_width=True, height=440, hide_index=True, key="map_editor",
             )
 
-            if not _edited_df.equals(_display_df):
-                for _, _row in _edited_df.iterrows():
-                    _mask = st.session_state.df_working["Code"] == _row["Code"]
-                    if _mask.any():
-                        st.session_state.df_working.loc[_mask, "Category"] = _row["Category"]
+            if not edited_df.equals(display_df):
+                for _, row in edited_df.iterrows():
+                    mask = st.session_state.df_working["Code"] == row["Code"]
+                    if mask.any():
+                        st.session_state.df_working.loc[mask, "Category"] = row["Category"]
 
             st.markdown("---")
 
             # Save / Clear
-            _sc1, _sc2, _sc3 = st.columns([2, 1, 1])
-            _default_date = datetime.now()
-            if _is_edit:
+            sc1, sc2, sc3 = st.columns([2, 1, 1])
+            default_date = datetime.now()
+            if is_edit:
                 try:
-                    _default_date = datetime.strptime(st.session_state.editing_period_key, "%Y-%m")
+                    default_date = datetime.strptime(st.session_state.editing_period_key, "%Y-%m")
                 except Exception:
                     pass
-            _save_date = _sc1.date_input("Save period", _default_date, key="map_date")
+            save_date = sc1.date_input("Save period", default_date, key="map_date")
 
-            if _sc2.button("Save", type="primary", use_container_width=True, key="map_save"):
-                _date_key = _save_date.strftime("%Y-%m")
-                _old_key = st.session_state.get("editing_period_key")
-                if _old_key and _old_key != _date_key:
-                    utils.delete_from_db(_old_key)
-                utils.save_to_db(_date_key, st.session_state.df_working.to_dict("records"))
+            if sc2.button("Save", type="primary", use_container_width=True, key="map_save"):
+                date_key = save_date.strftime("%Y-%m")
+                old_key = st.session_state.get("editing_period_key")
+                if old_key and old_key != date_key:
+                    utils.delete_from_db(old_key)
+
+                records = st.session_state.df_working.to_dict("records")
+                utils.save_to_db(date_key, records)
+
+                # Save mapping memory for future uploads
+                memory = {str(r["Code"]).strip(): r["Category"] for r in records}
+                utils.save_mapping_memory(memory)
+
                 st.session_state.df_working = None
                 st.session_state.editing_period_key = None
                 st.session_state.upload_key = st.session_state.get("upload_key", 0) + 1
-                st.toast(f"{_date_key} saved!")
+                st.toast(f"{date_key} saved!")
                 st.rerun()
 
-            if _sc3.button("Clear", use_container_width=True, key="map_clear"):
+            if sc3.button("Clear", use_container_width=True, key="map_clear"):
                 st.session_state.df_working = None
                 st.session_state.editing_period_key = None
                 st.session_state.upload_key = st.session_state.get("upload_key", 0) + 1
                 st.rerun()
 
-        with _col_side:
+        with col_side:
             st.markdown("##### Tools")
 
             with st.expander("Bulk Actions", expanded=True):
-                _bulk_prefix = st.text_input("Prefix (e.g. 71, 74)", key="bulk_pfx",
-                                              placeholder="Code prefix")
-                _bulk_cat = st.selectbox("Category", utils.MAPPING_OPTIONS, key="bulk_cat")
+                bulk_prefix = st.text_input("Prefix (e.g. 71, 74)", key="bulk_pfx",
+                                            placeholder="Code prefix")
+                bulk_cat = st.selectbox("Category", utils.MAPPING_OPTIONS, key="bulk_cat")
                 if st.button("Apply", key="bulk_apply", use_container_width=True, type="primary"):
-                    if _bulk_prefix:
-                        _bmask = st.session_state.df_working["Code"].astype(str).str.startswith(_bulk_prefix)
-                        _bcnt = _bmask.sum()
-                        if _bcnt > 0:
-                            st.session_state.df_working.loc[_bmask, "Category"] = _bulk_cat
-                            st.toast(f"{_bcnt} codes updated")
+                    if bulk_prefix:
+                        bmask = st.session_state.df_working["Code"].astype(str).str.startswith(bulk_prefix)
+                        bcnt = bmask.sum()
+                        if bcnt > 0:
+                            st.session_state.df_working.loc[bmask, "Category"] = bulk_cat
+                            st.toast(f"{bcnt} codes updated")
                             st.rerun()
                         else:
-                            st.warning(f"No codes start with '{_bulk_prefix}'")
+                            st.warning(f"No codes start with '{bulk_prefix}'")
 
                 st.markdown("---")
                 st.caption("Quick Presets:")
-                _presets = [
+                presets = [
                     ("71/72 > COGS", [("71", "COGS (თვითღირებულება)"), ("72", "COGS (თვითღირებულება)")]),
                     ("74 > OpEx", [("74", "Operating Expenses (საოპერაციო ხარჯები)")]),
                     ("6x > Revenue", [("6", "Revenue (შემოსავალი)")]),
                     ("1x > Current Assets", [("11", "BS: Current Assets (მიმდინარე აქტივები)"),
                                               ("12", "BS: Current Assets (მიმდინარე აქტივები)")]),
                 ]
-                for _lbl, _rules in _presets:
-                    if st.button(_lbl, key=f"preset_{_lbl}", use_container_width=True):
-                        _tc = 0
-                        for _pfx, _cat in _rules:
-                            _pm = st.session_state.df_working["Code"].astype(str).str.startswith(_pfx)
-                            st.session_state.df_working.loc[_pm, "Category"] = _cat
-                            _tc += _pm.sum()
-                        st.toast(f"{_tc} codes updated")
+                for lbl, rules in presets:
+                    if st.button(lbl, key=f"preset_{lbl}", use_container_width=True):
+                        tc = 0
+                        for pfx, cat in rules:
+                            pm = st.session_state.df_working["Code"].astype(str).str.startswith(pfx)
+                            st.session_state.df_working.loc[pm, "Category"] = cat
+                            tc += pm.sum()
+                        st.toast(f"{tc} codes updated")
                         st.rerun()
 
             with st.expander("Category Stats", expanded=False):
                 if "Category" in st.session_state.df_working.columns:
-                    _cc2 = st.session_state.df_working["Category"].value_counts().reset_index()
-                    _cc2.columns = ["Category", "Codes"]
+                    cc = st.session_state.df_working["Category"].value_counts().reset_index()
+                    cc.columns = ["Category", "Codes"]
                     if "Net" in st.session_state.df_working.columns:
-                        _nc2 = st.session_state.df_working.groupby("Category")["Net"].sum().reset_index()
-                        _nc2.columns = ["Category", "Net"]
-                        _cc2 = _cc2.merge(_nc2, on="Category", how="left")
-                        _cc2["Net"] = _cc2["Net"].apply(utils.fmt_fin)
-                    st.dataframe(_cc2, use_container_width=True, hide_index=True)
+                        nc = st.session_state.df_working.groupby("Category")["Net"].sum().reset_index()
+                        nc.columns = ["Category", "Net"]
+                        cc = cc.merge(nc, on="Category", how="left")
+                        cc["Net"] = cc["Net"].apply(utils.fmt_fin)
+                    st.dataframe(cc, use_container_width=True, hide_index=True)
 
             with st.expander("Mapping Variants", expanded=False):
-                _variants = utils.load_mapping_variants()
-                if _variants:
-                    _vnames = list(_variants.keys())
-                    _sel_var = st.selectbox("Load variant:", _vnames, key="load_var")
-                    _lc1, _lc2 = st.columns(2)
-                    if _lc1.button("Load", use_container_width=True, key="load_var_btn"):
-                        _vmap = _variants[_sel_var]
-                        _dft = st.session_state.df_working.copy()
-                        _dft["Code"] = _dft["Code"].astype(str).str.strip()
-                        _vc = 0
-                        for _idx, _vrow in _dft.iterrows():
-                            if str(_vrow["Code"]) in _vmap:
-                                _dft.at[_idx, "Category"] = _vmap[str(_vrow["Code"])]
-                                _vc += 1
-                        st.session_state.df_working = _dft
-                        st.toast(f"{_vc} codes updated")
+                variants = utils.load_mapping_variants()
+                if variants:
+                    vnames = list(variants.keys())
+                    sel_var = st.selectbox("Load variant:", vnames, key="load_var")
+                    lc1, lc2 = st.columns(2)
+                    if lc1.button("Load", use_container_width=True, key="load_var_btn"):
+                        vmap = variants[sel_var]
+                        dft = st.session_state.df_working.copy()
+                        dft["Code"] = dft["Code"].astype(str).str.strip()
+                        vc = 0
+                        for idx, vrow in dft.iterrows():
+                            if str(vrow["Code"]) in vmap:
+                                dft.at[idx, "Category"] = vmap[str(vrow["Code"])]
+                                vc += 1
+                        st.session_state.df_working = dft
+                        st.toast(f"{vc} codes updated")
                         st.rerun()
-                    if _lc2.button("Delete", use_container_width=True, key="del_var_btn"):
-                        utils.delete_mapping_variant(_sel_var)
+                    if lc2.button("Delete", use_container_width=True, key="del_var_btn"):
+                        utils.delete_mapping_variant(sel_var)
                         st.rerun()
                 st.markdown("---")
-                _nvname = st.text_input("Variant name:", key="new_var_name",
-                                         placeholder="e.g. 2024 Standard")
+                nvname = st.text_input("Variant name:", key="new_var_name",
+                                       placeholder="e.g. 2024 Standard")
                 if st.button("Save Current", use_container_width=True, key="save_var_btn"):
-                    if _nvname:
-                        _mdict = dict(zip(
+                    if nvname:
+                        mdict = dict(zip(
                             st.session_state.df_working["Code"].astype(str),
                             st.session_state.df_working.get("Category", "IGNORE (იგნორირება)"),
                         ))
-                        utils.save_mapping_variant(_nvname, _mdict)
-                        st.toast(f"'{_nvname}' saved!")
+                        utils.save_mapping_variant(nvname, mdict)
+                        st.toast(f"'{nvname}' saved!")
                     else:
                         st.warning("Enter a name")
 
@@ -575,19 +540,17 @@ with tab_pl:
     opts = sorted(db.keys(), reverse=True)
     if not opts:
         st.markdown("""
-<div style="text-align:center;padding:80px 20px;color:#94A3B8;">
-  <div style="font-size:40px;margin-bottom:16px;opacity:0.4;">&#128202;</div>
+<div style="text-align:center;padding:60px 20px;color:#94A3B8;">
+  <div style="font-size:36px;margin-bottom:12px;opacity:0.4;">📊</div>
   <div style="font-size:15px;font-weight:600;color:#64748B;">No data yet</div>
   <div style="font-size:13px;color:#94A3B8;">Upload and save data from the Mapping tab</div>
 </div>""", unsafe_allow_html=True)
     else:
-        col_gen, col_snap = st.columns([3, 1])
-        sel_src = col_gen.selectbox("Period:", opts, label_visibility="collapsed", key="pl_period")
+        sel_src = st.selectbox("Period:", opts, label_visibility="collapsed", key="pl_period")
 
         # Raw data for AI advisor and parent names
         df_raw = pd.DataFrame(db[sel_src])
         df_raw['Code'] = df_raw['Code'].astype(str).str.strip()
-        st.session_state.df_raw_for_names = df_raw
 
         # AI Advisor
         problematic_codes = ai_advisor_module.render_audit_ui(df_raw, "PL", source_key=sel_src, ui_key="pl")
@@ -626,11 +589,6 @@ with tab_pl:
     </div>
   </div>
 </div>""", unsafe_allow_html=True)
-
-        snap_name = col_snap.text_input("Snapshot:", value=f"PL_{sel_src}", label_visibility="collapsed")
-        if col_snap.button("Save Snapshot", key="snap_pl", use_container_width=True):
-            utils.save_snapshot(snap_name, df_clean.to_dict('records'))
-            st.toast("Snapshot saved!")
 
         # KPI row
         k1, k2, k3, k4, k5 = st.columns(5)
@@ -681,12 +639,9 @@ with tab_pl:
 
                 # Find parent name
                 p_name = PL_PARENT_MAP.get(str(p_code))
-                if not p_name and 'df_raw_for_names' in st.session_state:
-                    parent_row = st.session_state.df_raw_for_names[
-                        st.session_state.df_raw_for_names['Code'] == p_code]
+                if not p_name:
+                    parent_row = df_raw[df_raw['Code'] == p_code]
                     p_name = parent_row.iloc[0]['Name'] if not parent_row.empty else f"Group {p_code}"
-                elif not p_name:
-                    p_name = f"Group {p_code}"
 
                 children = subset[subset['ParentCode'] == p_code]
                 children_rows = ""
@@ -746,14 +701,6 @@ with tab_pl:
 </tbody></table>"""
         st.markdown(pl_html, unsafe_allow_html=True)
 
-        with st.expander("Snapshots Archive"):
-            snaps = utils.load_snapshots()
-            if snaps:
-                sel_s = st.selectbox("Snapshot:", list(snaps.keys()))
-                if st.button("Delete", key="del_snap"):
-                    utils.delete_snapshot(sel_s)
-                    st.rerun()
-
 # ─────────────────────────────────────────
 # TAB 3: BALANCE SHEET
 # ─────────────────────────────────────────
@@ -773,10 +720,10 @@ with tab_comp:
     comparison_module.render_comparison_tab()
 
 # ─────────────────────────────────────────
-# TAB 6: STRATEGY
+# TAB 6: DASHBOARD
 # ─────────────────────────────────────────
-with tab_sim:
-    st.markdown("### Strategic Analysis")
+with tab_dash:
+    st.markdown("### Financial Dashboard")
 
     db = utils.load_db()
     opts = sorted(db.keys(), reverse=True)
@@ -785,15 +732,14 @@ with tab_sim:
         st.info("No data available. Upload and save data first.")
     else:
         col_period, col_compare = st.columns([2, 2])
-        current_period = col_period.selectbox("Analysis period:", opts, key="strat_period")
+        current_period = col_period.selectbox("Analysis period:", opts, key="dash_period")
         compare_options = ["None"] + [o for o in opts if o != current_period]
-        compare_period = col_compare.selectbox("Compare with:", compare_options, key="strat_compare")
+        compare_period = col_compare.selectbox("Compare with:", compare_options, key="dash_compare")
 
         df_current = utils.clean_dataset_logic(db[current_period])
         m = utils.calc_pl_metrics(df_current)
         bs = utils.calc_bs_metrics(df_current, m['net_profit'])
 
-        df_previous = None
         m_prev = None
         if compare_period != "None":
             df_previous = utils.clean_dataset_logic(db[compare_period])
@@ -1037,7 +983,7 @@ with tab_sim:
                                     hovermode='x unified')
                 st.plotly_chart(fig_be, use_container_width=True)
 
-        # AI Insights
+        # Insights
         st.markdown("---")
         st.markdown("##### Insights")
 
