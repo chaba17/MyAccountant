@@ -155,10 +155,22 @@ if uploaded_file and st.session_state.df_working is None:
             df = df.loc[:, ~df.columns.duplicated(keep='first')]
 
         # Auto-detect columns
-        def _find_col(df, keywords, prefer_last=False):
+        def _find_col(df, keywords, prefer_last=False, priority_keywords=None):
+            """Find a column whose name matches any of `keywords`.
+
+            If `priority_keywords` is given, we first try to match a column that
+            contains BOTH a main keyword AND a priority keyword (e.g. 'ბრუნვა'
+            for turnover). This lets a trial-balance file pick the turnover
+            pair instead of the opening/closing balance pairs.
+            """
             matches = [col for col in df.columns
                        if any(kw in str(col).lower() for kw in keywords)]
             if matches:
+                if priority_keywords:
+                    priority = [c for c in matches
+                                if any(pk in str(c).lower() for pk in priority_keywords)]
+                    if priority:
+                        return priority[-1] if prefer_last else priority[0]
                 return matches[-1] if prefer_last else matches[0]
             for col in df.columns:
                 try:
@@ -176,10 +188,15 @@ if uploaded_file and st.session_state.df_working is None:
         # over "საიდენტიფიკაციო კოდი" (identification code) when both exist.
         code_col = _find_col(df, ['ანგარიშ', 'code', 'კოდ', 'account', 'ანალიტიკ', 'acct', '#'])
         name_col = _find_col(df, ['name', 'სახელ', 'დასახელ', 'description', 'title', 'наим'])
-        # prefer_last=True for debit/credit so in a trial balance we pick the
-        # CLOSING balance pair (rightmost date column) rather than the opening one.
-        debit_col = _find_col(df, ['debit', 'დებეტ', 'debet', 'db'], prefer_last=True)
-        credit_col = _find_col(df, ['credit', 'კრედიტ', 'cr'], prefer_last=True)
+        # For a Georgian trial balance with opening / turnover / closing triplets,
+        # we want the TURNOVER pair (ბრუნვა დებეტი / ბრუნვა კრედიტი) because it
+        # reflects period activity. If no turnover column exists (simple files),
+        # fall back to the last match (closing balance) via prefer_last=True.
+        turnover_kw = ['ბრუნვა', 'turnover', 'activity', 'movement']
+        debit_col = _find_col(df, ['debit', 'დებეტ', 'debet', 'db'],
+                              prefer_last=True, priority_keywords=turnover_kw)
+        credit_col = _find_col(df, ['credit', 'კრედიტ', 'cr'],
+                               prefer_last=True, priority_keywords=turnover_kw)
         balance_col = _find_col(df, ['balance', 'ნაშთ', 'net', 'სალდო', 'amount', 'თანხ'])
 
         # Fallback to positional
