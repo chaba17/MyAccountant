@@ -171,7 +171,9 @@ def load_mapping_variants():
         with open(VARIANTS_FILE, 'r', encoding='utf-8') as f: return json.load(f)
     except: return {}
 
-def save_mapping_variant(name, mapping_dict):
+def save_mapping_variant(name, mapping_dict
+
+):
     variants = load_mapping_variants()
     str_mapping = {str(k).strip(): v for k, v in mapping_dict.items()}
     variants[name] = str_mapping
@@ -253,24 +255,35 @@ def calc_bs_metrics(df_clean, net_profit=0):
 #  TYPE B -- NUMERIC PREFIX:
 #    "11" -> "1110"  (B[:len(A)] == A)
 #    "1610" -> "1610 00002"
-#    Rule: ' ' not in A AND len(A) < len(B) AND B[:len(A)] == A
+#    Rule: ' ' not in A AND '/' not in A AND len(A) < len(B) AND B[:len(A)] == A
 #
 #  TYPE C -- NET DUPLICATE (same net, different code):
 #    6000 Net == 6100 Net  ->  6000 higher-level summary, must be removed
 #    6100 Net == 6112+6113+6114  ->  6100 summary, must be removed
 #    Rule: detected via net equality + net-sum matching
 #
-# CLEAN rule:  remove TYPE A+B+C parents from summation
+#  TYPE D -- SLASH PREFIX (hierarchical path):
+#    "7475" -> "7475/0002"
+#    "3410" -> "3410/1" -> "3410/1/00007"
+#    "3410/2/EUR" -> "3410/2/EUR/00008"
+#    Rule: B.startswith(A + '/')
+#    Important: slash codes are siblings when they differ at any segment,
+#    so TYPE B's loose prefix rule must NOT apply when A contains '/'.
+#    (otherwise "3410/1" would falsely parent "3410/10").
+#
+# CLEAN rule:  remove TYPE A+B+C+D parents from summation
 # GROUP rule:  each leaf displays under its nearest parent (any type)
 # ===================================================================
 
 def _is_prefix_parent(a: str, b: str) -> bool:
-    """True if a is a TYPE A or TYPE B parent of b."""
+    """True if a is a TYPE A, B, or D parent of b."""
     if a == b:
         return False
     if b.startswith(a + ' '):          # TYPE A: space separator
         return True
-    if ' ' not in a and len(a) < len(b) and b[:len(a)] == a:  # TYPE B: numeric
+    if b.startswith(a + '/'):          # TYPE D: slash separator
+        return True
+    if ' ' not in a and '/' not in a and len(a) < len(b) and b[:len(a)] == a:  # TYPE B: numeric
         return True
     return False
 

@@ -209,3 +209,4 @@ def render_comparison_tab():
 </table>
 """
     st.markdown(table, unsafe_allow_html=True)
+

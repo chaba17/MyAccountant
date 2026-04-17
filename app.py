@@ -105,32 +105,81 @@ if uploaded_file and st.session_state.df_working is None:
         st.stop()
 
     try:
-        df = pd.read_excel(uploaded_file)
+        # Read raw (no header) so we can detect 1-row vs 2-row header formats
+        # without pandas auto-deduping column names (e.g. "01.01.2025" -> "01.01.2025.1").
+        df_raw = pd.read_excel(uploaded_file, header=None)
+        row0 = df_raw.iloc[0].fillna('').astype(str).str.strip().tolist() if len(df_raw) >= 1 else []
+        row1 = df_raw.iloc[1].fillna('').astype(str).str.strip().tolist() if len(df_raw) >= 2 else []
+
+        # Strict sub-header cell values (must be an exact cell content, not a substring)
+        subheader_cells = {'დებეტი', 'დებეტ', 'კრედიტი', 'კრედიტ', 'debit', 'credit',
+                           'კოდი', 'კოდ', 'code'}
+        def _row_is_subheader(row):
+            return sum(1 for c in row if c.lower() in subheader_cells) >= 2
+
+        header_kw = ['code', 'account', 'ანგარიშ', 'ანალიტიკ', 'კოდ', 'debit',
+                     'დებეტ', 'credit', 'კრედიტ', 'name', 'სახელ', 'დასახელ',
+                     'balance', 'ნაშთ']
+
+        if _row_is_subheader(row1):
+            # 2-row header: e.g. Georgian trial balance ("ბრუნვითი უწყისი")
+            #   row0: ანგარიში | დასახელება | ... | 01.01.2025 | 01.01.2025 | ბრუნვა | ბრუნვა | 01.01.2026 | 01.01.2026
+            #   row1: (empty)  | (empty)    | ... | დებეტი     | კრედიტი    | დებეტი | კრედიტი| დებეტი    | კრედიტი
+            # Merge -> "01.01.2026 კრედიტი" etc. so columns become unique.
+            merged = []
+            for a, b in zip(row0, row1):
+                if a and b:
+                    merged.append(f"{a} {b}")
+                elif b:
+                    merged.append(b)
+                else:
+                    merged.append(a)
+            df = df_raw.iloc[2:].reset_index(drop=True)
+            df.columns = merged
+        elif _row_is_subheader(row0) or any(kw in ' '.join(row0).lower() for kw in header_kw):
+            # 1-row header
+            df = df_raw.iloc[1:].reset_index(drop=True)
+            df.columns = row0
+        else:
+            # No header detected: treat row0 as data, use positional columns
+            df = df_raw.copy()
+            df.columns = [f"col_{i}" for i in range(len(df.columns))]
+
+        # Normalize column names
         df.columns = [str(c).strip() for c in df.columns]
 
-        # Check if first row is header
-        first_row = df.iloc[0].fillna('').astype(str).str.lower().tolist()
-        header_kw = ['code', 'account', 'ანალიტიკ', 'კოდ', 'debit', 'დებეტ',
-                     'credit', 'კრედიტ', 'name', 'სახელ', 'balance', 'ნაშთ']
-        if any(kw in ' '.join(first_row) for kw in header_kw):
-            df.columns = df.iloc[0].fillna('').astype(str).str.strip()
-            df = df.iloc[1:].reset_index(drop=True)
+        # Dedup columns up-front so df[col] never returns a DataFrame later.
+        # Belt-and-suspenders: merged headers should already be unique, but if
+        # the source file has genuinely duplicate columns, we trim them here.
+        if df.columns.duplicated().any():
+            df = df.loc[:, ~df.columns.duplicated(keep='first')]
 
         # Auto-detect columns
-        def _find_col(df, keywords):
+        def _find_col(df, keywords, prefer_last=False):
+            matches = [col for col in df.columns
+                       if any(kw in str(col).lower() for kw in keywords)]
+            if matches:
+                return matches[-1] if prefer_last else matches[0]
             for col in df.columns:
-                if any(kw in str(col).lower() for kw in keywords):
-                    return col
-            for col in df.columns:
-                sample = df[col].dropna().astype(str).head(10)
-                if sample.str.match(r'^\d{3,6}').mean() > 0.5:
-                    return col
+                try:
+                    col_data = df[col]
+                    if hasattr(col_data, 'columns'):  # DataFrame from duplicate cols
+                        col_data = col_data.iloc[:, 0]
+                    sample = col_data.dropna().astype(str).head(10)
+                    if len(sample) > 0 and sample.str.match(r'^\d{3,6}').mean() > 0.5:
+                        return col
+                except Exception:
+                    continue
             return None
 
-        code_col = _find_col(df, ['code', 'კოდ', 'account', 'ანალიტიკ', 'acct', '#'])
+        # 'ანგარიშ' must come before 'კოდ' so "ანგარიში" (account) column wins
+        # over "საიდენტიფიკაციო კოდი" (identification code) when both exist.
+        code_col = _find_col(df, ['ანგარიშ', 'code', 'კოდ', 'account', 'ანალიტიკ', 'acct', '#'])
         name_col = _find_col(df, ['name', 'სახელ', 'დასახელ', 'description', 'title', 'наим'])
-        debit_col = _find_col(df, ['debit', 'დებეტ', 'debet', 'db'])
-        credit_col = _find_col(df, ['credit', 'კრედიტ', 'cr'])
+        # prefer_last=True for debit/credit so in a trial balance we pick the
+        # CLOSING balance pair (rightmost date column) rather than the opening one.
+        debit_col = _find_col(df, ['debit', 'დებეტ', 'debet', 'db'], prefer_last=True)
+        credit_col = _find_col(df, ['credit', 'კრედიტ', 'cr'], prefer_last=True)
         balance_col = _find_col(df, ['balance', 'ნაშთ', 'net', 'სალდო', 'amount', 'თანხ'])
 
         # Fallback to positional
@@ -148,6 +197,12 @@ if uploaded_file and st.session_state.df_working is None:
         if credit_col and credit_col not in rename_map: rename_map[credit_col] = 'Credit'
         if balance_col and balance_col not in rename_map: rename_map[balance_col] = 'Balance'
         df.rename(columns=rename_map, inplace=True)
+
+        # De-duplicate column names: if rename produced two columns with the same target
+        # (e.g. source already had a "Code" column AND another column auto-detected as code),
+        # keep only the first occurrence so df['Code'] returns a Series, not a DataFrame.
+        if df.columns.duplicated().any():
+            df = df.loc[:, ~df.columns.duplicated(keep='first')]
 
         # Ensure required columns
         if 'Code' not in df.columns:
@@ -169,6 +224,15 @@ if uploaded_file and st.session_state.df_working is None:
         df = df[df['Code'].astype(str).str.strip() != ''].copy()
         df = df[df['Code'].astype(str).str.match(r'^\d', na=False)].copy()
         df['Code'] = df['Code'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+        # Strip thousands-separator commas from pure numeric codes (e.g. "3,410" -> "3410")
+        # so they line up with their slash-children like "3410/1".
+        def _strip_thousands_commas(x):
+            if isinstance(x, str) and ',' in x:
+                stripped = x.replace(',', '')
+                if stripped.isdigit():
+                    return stripped
+            return x
+        df['Code'] = df['Code'].apply(_strip_thousands_commas)
         df['Name'] = df['Name'].fillna('').astype(str)
         df['Debit'] = pd.to_numeric(df['Debit'], errors='coerce').fillna(0)
         df['Credit'] = pd.to_numeric(df['Credit'], errors='coerce').fillna(0)
@@ -180,7 +244,10 @@ if uploaded_file and st.session_state.df_working is None:
         st.sidebar.success(f"Loaded {len(df):,} rows")
 
     except Exception as e:
+        import traceback as _tb
         st.error(f"Error processing file: {str(e)}")
+        with st.expander("Error details (for debugging)"):
+            st.code(_tb.format_exc())
         st.stop()
 
     # ── Hierarchy detection & Category assignment ──
@@ -190,15 +257,26 @@ if uploaded_file and st.session_state.df_working is None:
 
     _nets = df.groupby("Code")["Net"].sum().to_dict()
     _all = list(df["Code"].unique())
-    _pure = [c for c in _all if ' ' not in c]
+    _all_set = set(_all)
+    _pure = [c for c in _all if ' ' not in c and '/' not in c]
     _parents = set()
 
-    # Rule 1: space separator
+    # Rule 1: space separator (TYPE A)
     for _c in _all:
         if ' ' in _c:
             _p = _c.split(' ')[0]
-            if _p in set(_all):
+            if _p in _all_set:
                 _parents.add(_p)
+
+    # Rule 1b: slash separator (TYPE D) -- every proper slash-prefix that exists is a parent
+    # e.g. "3410/2/EUR/00008" contributes parents "3410/2/EUR", "3410/2", "3410" if they exist.
+    for _c in _all:
+        if '/' in _c:
+            _segs = _c.split('/')
+            for _i in range(1, len(_segs)):
+                _p = '/'.join(_segs[:_i])
+                if _p in _all_set:
+                    _parents.add(_p)
 
     # Rule 2: same net, pure numeric -> smaller = parent
     for _a in _pure:

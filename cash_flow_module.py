@@ -136,3 +136,4 @@ def render_cash_flow_tab():
 </table>
 """
         st.markdown(html, unsafe_allow_html=True)
+
